@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.cache/
+site/
+out/
+.env
+*.secret
+library.json
