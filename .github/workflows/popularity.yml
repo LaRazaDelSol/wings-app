@@ -34,6 +34,14 @@ jobs:
           path: .cache/http
           key: http-${{ github.run_id }}
           restore-keys: http-
+      - name: Unpack title list from secret
+        env:
+          CATALOGUE_TITLES_GZ: ${{ secrets.CATALOGUE_TITLES_GZ }}
+        run: |
+          if [ -z "$CATALOGUE_TITLES_GZ" ]; then
+            echo "::error::Repository secret CATALOGUE_TITLES_GZ is not set (see README: pack_titles.py)."; exit 1
+          fi
+          printf '%s' "$CATALOGUE_TITLES_GZ" | base64 -d | gzip -d > catalogue-titles.json
       - name: Build index
         env:
           WINGS_CONTACT: ${{ vars.WINGS_CONTACT }}

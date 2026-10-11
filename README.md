@@ -37,10 +37,18 @@ python -m unittest discover -s tests     (pytest also works)
 
 ### Catalogue input for CI
 
-The catalogue (`library.json`) is third-party data and is not committed here. CI reads `catalogue-titles.json`, a list of
-`{"titleId","title"}` pairs and nothing else. Generate it locally with `extract_titles.py` (titles are cleaned of
-`[exFAT]`, versions, `@packager` tags; non-game ids are dropped), look at it, and commit it only if you are comfortable
-publishing those title strings. Refresh it when the catalogue changes.
+The catalogue (`library.json`) is third-party data and is never committed here, and neither is the title list.
+CI gets the list of `{"titleId","title"}` pairs from the repository secret `CATALOGUE_TITLES_GZ` (gzip + base64,
+masked in logs, written to a temporary file at run time). To create or refresh it:
+
+```
+python extract_titles.py path/to/library.json catalogue-titles.json   # git-ignored
+python pack_titles.py catalogue-titles.json                           # prints the secret value
+```
+
+Paste the printed line into Settings > Secrets and variables > Actions > New repository secret. Titles are cleaned of
+`[exFAT]`, versions and `@packager` tags, and non-game ids are dropped. The published `popularity.v1.json` is keyed by
+title ID only (public PlayStation identifiers): no names, no links.
 
 ### Matching and fixes
 

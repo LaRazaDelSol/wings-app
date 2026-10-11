@@ -7,3 +7,4 @@ out/
 .env
 *.secret
 library.json
+catalogue-titles.json
