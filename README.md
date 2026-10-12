@@ -13,7 +13,7 @@ One clean page per game. See what every link is before you press it. Manage your
 | What Wings is | What Wings is not |
 |---|---|
 | A PS5 app (title ID `PPSA99178`) that is a front end for a **Pegasus DL you already run** on the same console, through its local API at `127.0.0.1:6970`. | Not Pegasus DL, not affiliated with its author, and not a replacement for it. Pegasus does the downloading, installing and extracting. |
-| A better way to browse what Pegasus already knows: games grouped one per tile, links explained, files managed with a controller. | Not a source of games. Wings ships **no catalogues, no sources and no download links**. You add your own sources in Pegasus. |
+| A better way to browse what Pegasus already knows: games grouped one per tile, links explained, files managed with a controller. | Not a source of games. Wings ships **no catalogues, no sources and no download links**. Only play and use games you legally own and are permitted to install. |
 | Free software, GPL-3.0-or-later, built on the TV app of Orbit Store. | Not Orbit Store. None of Orbit's backend (payload, loader, pairing, update feeds) is in Wings. |
 
 > **Use it responsibly.** Wings is a front end: it ships no catalogues, sources or links. Use it only with content you own or have permission to download, the same as Pegasus DL asks.
