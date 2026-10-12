@@ -1,8 +1,20 @@
+<p align="center">
+  <img src="./app/sce_sys/icon0.png" alt="Wings Logo" width="25%%">
+</p>
+
+<p align="center">
+  <a href="https://github.com/LaRazaDelSol/wings-app/releases/tag/v0.1.0"><img alt="Release" src="https://img.shields.io/github/v/release/wings-app/wings-app?label=release&color=24292f"></a>
+  <a href="https://github.com/LaRazaDelSol/wings-app/releases/download/v0.1.0/PPSA99178.ffpkg"><img alt="Download" src="https://img.shields.io/badge/download-release-24292f"></a>
+  <img alt="PS5 homebrew" src="https://img.shields.io/badge/PS5-homebrew-24292f">
+</p>
+
+<p align="center">
+  A native PS5 front end for Pegasus DL, made for the couch and a controller.
+</p>
+
 <div align="center">
-
-# Wings
-
-### A native PS5 front end for Pegasus DL, made for the couch and a controller.
+  
+---
 
 One clean page per game. See what every link is before you press it. Manage your files. Let Pegasus do the downloading.
 
