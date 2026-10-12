@@ -17,8 +17,13 @@ from ..net import HttpError
 TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 GAMES_URL = "https://api.igdb.com/v4/games"
 IMAGE = "https://images.igdb.com/igdb/image/upload/t_1080p/%s.jpg"
+IMAGE_LOW = "https://images.igdb.com/igdb/image/upload/t_screenshot_big/%s.jpg"  # 889x500
+TARGET = 16 / 9
+MAX_DEVIATION = 0.15   # accepted ratio is within 15% of 16:9
+MIN_WIDTH = 1280
+MIN_WIDTH_LOW = 640
 PLATFORMS = "(167,48)"
-FIELDS = "name,first_release_date,platforms,total_rating,total_rating_count,rating,rating_count,artworks.image_id,screenshots.image_id"
+FIELDS = "name,first_release_date,platforms,total_rating,total_rating_count,rating,rating_count,artworks.image_id,artworks.width,artworks.height,screenshots.image_id,screenshots.width,screenshots.height"
 
 
 class Igdb(Provider):
@@ -61,14 +66,40 @@ class Igdb(Provider):
         return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).year
 
     @staticmethod
-    def _image_url(g):
-        """First artwork, else first screenshot; only plain image_id tokens are accepted."""
-        for key in ("artworks", "screenshots"):
-            for it in g.get(key) or []:
-                iid = it.get("image_id") if isinstance(it, dict) else None
-                if isinstance(iid, str) and re.fullmatch(r"[a-z0-9]{1,40}", iid):
-                    return IMAGE % iid
-        return None
+    def _best(items, min_width):
+        """Closest to 16:9 among items with a plain image_id, real dims, width >= min_width and a ratio
+        within MAX_DEVIATION of 16:9. Ties go to the wider image. Returns (image_id, ratio) or None."""
+        best = None
+        for it in items or []:
+            if not isinstance(it, dict):
+                continue
+            iid, w, h = it.get("image_id"), it.get("width"), it.get("height")
+            if not (isinstance(iid, str) and re.fullmatch(r"[a-z0-9]{1,40}", iid)):
+                continue
+            if not all(isinstance(v, int) and not isinstance(v, bool) and v > 0 for v in (w, h)):
+                continue
+            ratio = w / h
+            dev = abs(ratio / TARGET - 1)
+            if w < min_width or dev > MAX_DEVIATION:
+                continue
+            key = (round(dev, 4), -w)
+            if best is None or key < best[0]:
+                best = (key, iid, ratio)
+        return (best[1], best[2]) if best else None
+
+    @classmethod
+    def _image_url(cls, g):
+        """(hero_url, kind, ratio, low_url). hero: best 16:9 screenshot at t_1080p, else best 16:9
+        artwork; banners and odd shapes are never returned. low: small screenshot (t_screenshot_big)."""
+        shot = cls._best(g.get("screenshots"), MIN_WIDTH)
+        art = None if shot else cls._best(g.get("artworks"), MIN_WIDTH)
+        low = cls._best(g.get("screenshots"), MIN_WIDTH_LOW)
+        low_url = IMAGE_LOW % low[0] if low else None
+        if shot:
+            return IMAGE % shot[0], "screenshot", shot[1], low_url
+        if art:
+            return IMAGE % art[0], "artwork", art[1], low_url
+        return None, None, None, low_url
 
     def lookup(self, entry, override=None):
         try:
@@ -91,5 +122,7 @@ class Igdb(Provider):
         count = g.get("total_rating_count", g.get("rating_count"))
         if rating is None:
             return None
+        url, kind, ratio, low = self._image_url(g)
         return Signal(self.name, g["id"], g.get("name", ""), conf, amb, rating=round(float(rating), 1),
-                      rating_count=int(count or 0), image_url=self._image_url(g))
+                      rating_count=int(count or 0), image_url=url, image_kind=kind, image_ratio=ratio,
+                      low_url=low)

@@ -27,7 +27,7 @@ def render(entries, results, records, providers, generated_at, skipped=None):
             r = res.get(p)
             if hasattr(r, "confidence") and r.confidence < ACCEPT:
                 low.append((tid, p, r))
-        if not any(hasattr(res.get(p), "confidence") for p in providers):
+        if not any(hasattr(res.get(p), "confidence") for p in providers if p != "pic0"):
             unmatched.append(tid)
     lines += ["", "## Low confidence (%d) -- fix with overrides.json" % len(low), ""]
     if low:

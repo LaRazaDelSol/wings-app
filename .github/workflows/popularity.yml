@@ -50,12 +50,12 @@ jobs:
           WINGS_CONTACT: ${{ vars.WINGS_CONTACT }}
           TWITCH_CLIENT_ID: ${{ secrets.TWITCH_CLIENT_ID }}
           TWITCH_CLIENT_SECRET: ${{ secrets.TWITCH_CLIENT_SECRET }}
-          # IGDB is opt-in: set repository variable WINGS_PROVIDERS to "wikipedia,steam,igdb" to enable it.
-          WINGS_PROVIDERS: ${{ vars.WINGS_PROVIDERS || 'wikipedia,steam' }}
+          # IGDB is opt-in: set repository variable WINGS_PROVIDERS to "wikipedia,steam,pic0,igdb" to enable it.
+          WINGS_PROVIDERS: ${{ vars.WINGS_PROVIDERS || 'wikipedia,steam,pic0' }}
         run: |
           python build_index.py --catalogue catalogue-titles.json --overrides overrides.json \
             --providers "$WINGS_PROVIDERS" --out site/popularity.v1.json --report out/report.md \
-            --max-bytes 400000
+            --max-bytes 500000
       - name: Save provider response cache (also after a failure, so a retry is fast)
         if: always()
         uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4

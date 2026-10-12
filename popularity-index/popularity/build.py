@@ -10,6 +10,7 @@ from . import SCHEMA_VERSION, blend as blendmod, report as reportmod
 from .models import Entry, ProviderError
 from .net import CachedHttp, RateLimiter, UrlLibHttp
 from .providers.igdb import Igdb
+from .providers.pic0 import Pic0
 from .providers.steam import Steam
 from .providers.wikipedia import Wikipedia
 
@@ -17,11 +18,15 @@ ATTRIBUTION = {
     "wikipedia": "Pageview data from Wikimedia (CC0).",
     "steam": "Review data from Steam (percent positive and count only).",
     "igdb": "Ratings and popularity data from IGDB.com",
+    "pic0": "Game artwork from Prosperopatches (prosperopatches.com).",
 }
+ART_ONLY = blendmod.ART_ONLY  # providers that only supply artwork: not listed in "sources"
 INTERVALS = {"en.wikipedia.org": 0.25, "wikimedia.org": 0.25, "store.steampowered.com": 1.0,
-             "api.steampowered.com": 1.0, "api.igdb.com": 0.25, "id.twitch.tv": 1.0}
+             "api.steampowered.com": 1.0, "api.igdb.com": 0.25, "id.twitch.tv": 1.0,
+             "prosperopatches.com": 1.0}
+HOST_GROUPS = {"cdn.prosperopatches.com": "prosperopatches.com"}  # one shared 1 req/s budget
 MAX_WORKERS = 3
-DEFAULT_PROVIDERS = ("wikipedia", "steam")  # igdb is opt-in
+DEFAULT_PROVIDERS = ("wikipedia", "steam")  # igdb and pic0 are opt-in
 
 
 def load_catalogue(path, limit=None):
@@ -65,7 +70,7 @@ def override_for(overrides, tid, source):
 
 def make_providers(names, http, today, environ=None):
     table = {"wikipedia": lambda: Wikipedia(http, today), "steam": lambda: Steam(http),
-             "igdb": lambda: Igdb(http, environ)}
+             "igdb": lambda: Igdb(http, environ), "pic0": lambda: Pic0(http)}
     active, skipped = [], {}
     for n in names:
         if n not in table:
@@ -112,7 +117,7 @@ def build_document(entries, results, providers_used, now):
     doc = {
         "schemaVersion": SCHEMA_VERSION,
         "generatedAt": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "sources": sorted(providers_used),
+        "sources": sorted(p for p in providers_used if p not in ART_ONLY),
         "attribution": {k: ATTRIBUTION[k] for k in sorted(providers_used)},
         "titles": records,
     }
@@ -133,7 +138,7 @@ def run(args, environ=None, http=None, log=lambda m: print(m, file=sys.stderr)):
         if not contact:
             raise SystemExit("WINGS_CONTACT is required (contact string for the User-Agent, e.g. an email)")
         ua = "Wings-popularity/0.1 (contact: %s) python-urllib/3" % contact
-        http = UrlLibHttp(ua, RateLimiter(INTERVALS, default=1.0))
+        http = UrlLibHttp(ua, RateLimiter(INTERVALS, default=1.0, groups=HOST_GROUPS))
         if args.cache_dir:
             http = CachedHttp(http, args.cache_dir, ttl_seconds=args.cache_ttl_days * 86400)
     entries = load_catalogue(args.catalogue, args.limit)

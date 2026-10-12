@@ -10,6 +10,7 @@ from ..net import HttpError
 
 SEARCH = "https://store.steampowered.com/api/storesearch/"
 HERO = "https://cdn.cloudflare.steamstatic.com/steam/apps/%d/library_hero.jpg"
+STEAM_HERO_RATIO = 1920 / 620  # library_hero.jpg is always 1920x620
 REVIEWS = "https://api.steampowered.com/IUserReviewsService/GetAppReviews/v1/"
 
 
@@ -55,4 +56,5 @@ class Steam(Provider):
             return None
         pct, total = s
         return Signal(self.name, appid, name, conf, amb, rating=pct, rating_count=total,
-                      attention=total, attention_kind="reviews", image_url=HERO % int(appid))
+                      attention=total, attention_kind="reviews", image_url=HERO % int(appid),
+                      image_kind="steam", image_ratio=STEAM_HERO_RATIO)

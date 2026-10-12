@@ -14,6 +14,7 @@ from popularity.matcher import Candidate  # noqa: E402
 from popularity.models import Entry, ProviderError, Signal  # noqa: E402
 from popularity.net import CachedHttp, HttpError, RateLimiter  # noqa: E402
 from popularity.normalize import clean_title, normalize  # noqa: E402
+from popularity.providers import pic0  # noqa: E402
 from popularity.providers.igdb import Igdb  # noqa: E402
 from popularity.providers.steam import Steam  # noqa: E402
 from popularity.providers.wikipedia import Wikipedia  # noqa: E402
@@ -147,8 +148,11 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(s.external_id, 119133)
         self.assertEqual(s.rating, 95.4)
         self.assertEqual(s.rating_count, 3000)
-        self.assertEqual(s.image_url, "https://images.igdb.com/igdb/image/upload/t_1080p/ar1abc.jpg")
-        self.assertIn("artworks.image_id", http.calls[-1][2])
+        self.assertEqual(s.image_url, "https://images.igdb.com/igdb/image/upload/t_1080p/sc2def.jpg")  # not the banner
+        self.assertEqual(s.image_kind, "screenshot")
+        self.assertEqual(s.low_url, "https://images.igdb.com/igdb/image/upload/t_screenshot_big/sc2def.jpg")
+        self.assertIn("artworks.width", http.calls[-1][2])
+        self.assertIn("screenshots.height", http.calls[-1][2])
         self.assertEqual(http.headers["Client-ID"], "cid")
         self.assertIn("platforms = (167,48)", http.calls[-1][2])
         p.lookup(Entry("PPSA2", "Elden Ring"))
@@ -265,7 +269,7 @@ class BuildTests(unittest.TestCase):
             self.assertIn("steam", doc["attribution"])
             self.assertEqual(list(doc["titles"]), sorted(doc["titles"]))
             rec = doc["titles"]["PPSA00001"]
-            self.assertEqual(set(rec), {"score", "rating", "ratingCount", "sources", "confidence", "fetchedAt", "hero"})
+            self.assertEqual(set(rec), {"score", "rating", "ratingCount", "sources", "confidence", "hero"})
             self.assertEqual(rec["hero"], "https://cdn.cloudflare.steamstatic.com/steam/apps/1145350/library_hero.jpg")
             self.assertTrue(os.path.exists(os.path.join(tmp, "o", "report.md")))
             self.assertTrue(os.path.exists(os.path.join(tmp, "o", "p.json.sha256")))
@@ -314,35 +318,78 @@ class BuildTests(unittest.TestCase):
         self.assertIn("PPSA3  C", md)
 
 
+STEAM = "https://cdn.cloudflare.steamstatic.com/steam/apps/1/library_hero.jpg"
+IGDB = "https://images.igdb.com/igdb/image/upload/t_1080p/a.jpg"
+IGDB_LOW = "https://images.igdb.com/igdb/image/upload/t_screenshot_big/a.jpg"
+PIC0 = "https://cdn.prosperopatches.com/titles/PPSA01234_" + "a1" * 32 + "/pic0.webp"
+ICON = "https://cdn.prosperopatches.com/titles/PPSA01234_" + "a1" * 32 + "/icon0.webp"
+
+
 class HeroTests(unittest.TestCase):
-    def s(self, src, conf=1.0, amb=False, url=None):
-        return Signal(src, 1, "x", conf, ambiguous=amb, rating=90, rating_count=100, attention=5, image_url=url)
+    def s(self, src, conf=1.0, amb=False, url=None, ratio=16 / 9, low=None):
+        return Signal(src, 1, "x", conf, ambiguous=amb, rating=90, rating_count=100, attention=5, image_url=url,
+                      image_ratio=ratio if url else None, low_url=low)
 
     def rec(self, *sigs):
         return blend.blend({"PPSA1": list(sigs)}, "2026-10-11")["PPSA1"]
 
-    def test_steam_preferred_over_igdb(self):
-        r = self.rec(self.s("steam", url="https://cdn.cloudflare.steamstatic.com/steam/apps/1/library_hero.jpg"),
-                     self.s("igdb", url="https://images.igdb.com/igdb/image/upload/t_1080p/a.jpg"))
-        self.assertIn("steamstatic", r["hero"])
+    def test_priority_pic0_then_igdb_then_steam(self):
+        p = Signal("pic0", "PPSA1", "", 1.0, image_url=PIC0, image_ratio=16 / 9)
+        st, ig = self.s("steam", url=STEAM, ratio=1920 / 620), self.s("igdb", url=IGDB, low=IGDB_LOW)
+        r = self.rec(st, ig, p)
+        self.assertEqual((r["hero"], r["heroLow"]), (PIC0, IGDB_LOW))
+        self.assertEqual(self.rec(st, ig)["hero"], IGDB)
+        self.assertEqual(self.rec(st, self.s("igdb"))["hero"], STEAM)
 
-    def test_igdb_when_no_steam(self):
-        r = self.rec(self.s("steam"), self.s("igdb", url="https://images.igdb.com/igdb/image/upload/t_1080p/a.jpg"))
-        self.assertIn("igdb", r["hero"])
+    def test_pic0_is_art_only(self):
+        p = Signal("pic0", "PPSA1", "", 1.0, image_url=PIC0, image_ratio=16 / 9)
+        r = self.rec(self.s("steam"), p)
+        self.assertEqual(r["sources"], ["steam"])
+        self.assertEqual(r["confidence"], 1.0)
+        self.assertEqual(blend.blend({"PPSA1": [p]}, None), {})  # art alone never creates a record
 
     def test_low_confidence_or_ambiguous_or_http_gets_none(self):
         self.assertNotIn("hero", self.rec(self.s("steam", conf=0.7, url="https://x/y.jpg")))
         self.assertNotIn("hero", self.rec(self.s("steam", conf=0.5, amb=True, url="https://x/y.jpg")))
         self.assertNotIn("hero", self.rec(self.s("steam", url="http://x/y.jpg")))
+        self.assertNotIn("hero", self.rec(self.s("steam", url="https://u@x/y.jpg")))
+        self.assertNotIn("hero", self.rec(self.s("steam", url="https://x/y.jpg?" + "a" * 300)))
 
-    def test_igdb_rejects_odd_image_id(self):
-        g = {"artworks": [{"image_id": "../x"}], "screenshots": [{"image_id": "ok1"}]}
-        self.assertTrue(Igdb._image_url(g).endswith("/ok1.jpg"))
-        self.assertIsNone(Igdb._image_url({"artworks": [{"image_id": "a b"}]}))
+    def test_ratio_bounds(self):
+        for ratio, ok in ((1.4, False), (1.5, True), (3.2, True), (3.3, False), (1920 / 399, False)):
+            r = self.rec(self.s("steam", url=STEAM, ratio=ratio))
+            self.assertEqual("hero" in r, ok, ratio)
+        self.assertNotIn("hero", self.rec(self.s("steam", url=STEAM, ratio=None)))
 
-    def test_hero_is_small_and_additive(self):
-        r = self.rec(self.s("steam", url="https://cdn.cloudflare.steamstatic.com/steam/apps/1145350/library_hero.jpg"))
-        self.assertLess(len(json.dumps(r, separators=(",", ":"))), 300)
+    def test_heroLow_omitted_when_missing_same_or_no_hero(self):
+        self.assertNotIn("heroLow", self.rec(self.s("igdb", url=IGDB)))
+        self.assertNotIn("heroLow", self.rec(self.s("igdb", url=IGDB, low=IGDB)))
+        r = self.rec(self.s("igdb", url=None, low=IGDB_LOW))
+        self.assertNotIn("hero", r)
+        self.assertNotIn("heroLow", r)
+        self.assertNotIn("heroLow", self.rec(self.s("igdb", conf=0.7, url=IGDB, low=IGDB_LOW)))
+
+    def test_no_fetchedAt(self):
+        self.assertNotIn("fetchedAt", self.rec(self.s("steam")))
+
+    def test_igdb_selection(self):
+        def sc(i, w, h):
+            return {"image_id": i, "width": w, "height": h}
+        g = {"artworks": [sc("ban", 1920, 399), sc("art", 1920, 1080)],
+             "screenshots": [sc("shot43", 1600, 1200), sc("shot169", 1920, 1080), sc("small", 960, 540)]}
+        url, kind, ratio, low = Igdb._image_url(g)
+        self.assertTrue(url.endswith("/t_1080p/shot169.jpg"))
+        self.assertEqual(kind, "screenshot")
+        self.assertTrue(low.endswith("/t_screenshot_big/shot169.jpg"))
+        # banner only -> nothing; artwork 16:9 used when no screenshot qualifies
+        self.assertEqual(Igdb._image_url({"artworks": [sc("ban", 1920, 399)]}), (None, None, None, None))
+        url, kind, _, low = Igdb._image_url({"artworks": [sc("art", 2560, 1440)], "screenshots": [sc("tiny", 800, 450)]})
+        self.assertEqual((kind, url.split("/")[-1]), ("artwork", "art.jpg"))
+        self.assertTrue(low.endswith("/tiny.jpg"))
+        # too narrow for the hero, missing dims, odd ids are skipped
+        self.assertIsNone(Igdb._best([sc("narrow", 1000, 562)], 1280))
+        self.assertIsNone(Igdb._best([{"image_id": "nodims"}, sc("../x", 1920, 1080), sc("a b", 1920, 1080)], 1280))
+        self.assertEqual(Igdb._best([sc("w", 1920, 1080), sc("v", 1280, 720)], 1280)[0], "w")  # tie -> wider
 
     def test_verify_hero_falls_back_to_header(self):
         import verify_hero
@@ -355,6 +402,147 @@ class HeroTests(unittest.TestCase):
         self.assertEqual((n, bad), (3, ["PPSA2", "PPSA3"]))
         self.assertTrue(doc["titles"]["PPSA2"]["hero"].endswith("header.jpg"))
         self.assertNotIn("hero", doc["titles"]["PPSA3"])
+
+    def test_verify_hero_handles_heroLow(self):
+        import verify_hero
+        doc = {"titles": {"A": {"hero": "https://h/a", "heroLow": "https://l/a"},
+                          "B": {"hero": "https://h/b", "heroLow": "https://l/b"}}}
+        ok = {"https://h/a", "https://l/b"}
+        n, bad = verify_hero.verify(doc, lambda u: u in ok, fix=True)
+        self.assertEqual((n, bad), (2, ["A", "B"]))
+        self.assertEqual(doc["titles"]["A"], {"hero": "https://h/a"})
+        self.assertEqual(doc["titles"]["B"], {})
+
+
+def webp(kind, w, h):
+    head = b"RIFF" + (1000).to_bytes(4, "little") + b"WEBP"
+    if kind == "lossy":
+        return head + b"VP8 " + (500).to_bytes(4, "little") + b"\x00\x00\x00" + b"\x9d\x01\x2a" \
+            + w.to_bytes(2, "little") + h.to_bytes(2, "little") + b"\x00" * 40
+    if kind == "lossless":
+        bits = (w - 1) | ((h - 1) << 14)
+        return head + b"VP8L" + (500).to_bytes(4, "little") + b"\x2f" + bits.to_bytes(4, "little") + b"\x00" * 40
+    return head + b"VP8X" + (10).to_bytes(4, "little") + b"\x00" * 4 + (w - 1).to_bytes(3, "little") \
+        + (h - 1).to_bytes(3, "little") + b"\x00" * 40
+
+
+def page(content, attr="name"):
+    return '<html><head><title>x</title><meta %s="twitter:image" content="%s"><meta name="a" content="b"></head></html>' \
+        % (attr, content)
+
+
+class FakeWeb:
+    """get_text / get_bytes fake with the real extract contract."""
+
+    def __init__(self, pages, images):
+        self.pages, self.images, self.calls = pages, images, []
+
+    def get_text(self, url, limit=65536, extract=None, ttl=None, cache=True):
+        self.calls.append(url)
+        if url not in self.pages:
+            raise HttpError(404, url)
+        return extract(self.pages[url]) if extract else self.pages[url]
+
+    def get_bytes(self, url, start=0, length=64, ttl=None, cache=True):
+        self.calls.append(url)
+        if url not in self.images:
+            raise HttpError(404, url)
+        return self.images[url][:length]
+
+
+class Pic0Tests(unittest.TestCase):
+    def look(self, html, img=None, ppsa="PPSA01234"):
+        web = FakeWeb({"https://prosperopatches.com/" + ppsa: html}, {PIC0: img} if img else {})
+        return pic0.Pic0(web).lookup(Entry(ppsa, "T")), web
+
+    def test_webp_dimensions(self):
+        self.assertEqual(pic0.webp_size(webp("lossy", 1920, 1080)), (1920, 1080))
+        self.assertEqual(pic0.webp_size(webp("lossless", 1920, 1080)), (1920, 1080))
+        self.assertEqual(pic0.webp_size(webp("extended", 1920, 1080)), (1920, 1080))
+        self.assertIsNone(pic0.webp_size(b"RIFF" + b"\x00" * 60))
+        self.assertIsNone(pic0.webp_size(b"\x89PNG" + b"\x00" * 60))
+        self.assertIsNone(pic0.webp_size(b"RIFF"))
+
+    def test_hit_for_each_encoding(self):
+        for kind in ("lossy", "lossless", "extended"):
+            s, web = self.look(page(ICON), webp(kind, 1920, 1080))
+            self.assertEqual((s.image_url, s.image_kind, s.confidence), (PIC0, "pic0", 1.0))
+            self.assertAlmostEqual(s.image_ratio, 16 / 9, places=3)
+
+    def test_meta_property_attribute_also_works(self):
+        s, _ = self.look(page(ICON, "property"), webp("lossy", 1920, 1080))
+        self.assertIsNotNone(s)
+
+    def test_banner_and_unknown_page_rejected(self):
+        s, web = self.look(page("https://prosperopatches.com/assets/images/banner.webp"), webp("lossy", 1920, 1080))
+        self.assertIsNone(s)
+        self.assertEqual(len(web.calls), 1)  # never probed an image
+        self.assertIsNone(self.look("<html>no meta</html>")[0])
+
+    def test_wrong_id_and_malformed_urls_rejected(self):
+        other = ICON.replace("PPSA01234", "PPSA99999")
+        bad = [other, ICON.replace("https://", "http://"), ICON + "?x=1", ICON.replace("a1" * 32, "A1" * 32),
+               ICON.replace("cdn.prosperopatches.com", "cdn.prosperopatches.com.evil.test"),
+               ICON.replace("a1" * 32, "a1" * 31), ICON.replace("icon0", "pic0"), "https://u@" + ICON[8:]]
+        for c in bad:
+            self.assertIsNone(pic0.icon_url_for(c, "PPSA01234"), c)
+            self.assertIsNone(self.look(page(c), webp("lossy", 1920, 1080))[0])
+        self.assertEqual(pic0.icon_url_for(ICON, "PPSA01234"), ICON)
+
+    def test_image_shape_checks(self):
+        for img in (webp("lossy", 1920, 400), webp("lossy", 1000, 562), webp("lossy", 1280, 1280), b"nope" * 20):
+            self.assertIsNone(self.look(page(ICON), img)[0])
+        self.assertIsNotNone(self.look(page(ICON), webp("lossy", 1280, 720))[0])
+        self.assertIsNone(self.look(page(ICON))[0])  # pic0.webp missing -> no pic0
+
+    def test_cusa_skipped_and_errors_are_provider_errors(self):
+        web = FakeWeb({}, {})
+        self.assertIsNone(pic0.Pic0(web).lookup(Entry("CUSA00002", "T")))
+        self.assertEqual(web.calls, [])
+
+        class Boom(FakeWeb):
+            def get_text(self, *a, **k):
+                raise HttpError(503, "x")
+        with self.assertRaises(ProviderError):
+            pic0.Pic0(Boom({}, {})).lookup(Entry("PPSA01234", "T"))
+
+    def test_cache_stores_small_extract_and_bytes(self):
+        class Inner:
+            n = 0
+
+            def request(self, method, url, params=None, headers=None, body=None, parse="json", limit=None):
+                Inner.n += 1
+                return page(ICON) if parse == "text" else webp("lossy", 1920, 1080)
+        with tempfile.TemporaryDirectory() as d:
+            for _ in range(2):
+                s = pic0.Pic0(CachedHttp(Inner(), d)).lookup(Entry("PPSA01234", "T"))
+                self.assertEqual(s.image_url, PIC0)
+            self.assertEqual(Inner.n, 2)  # second run fully served from disk
+            for root, _, files in os.walk(d):
+                for f in files:
+                    with open(os.path.join(root, f)) as fh:
+                        self.assertNotIn("<html>", fh.read())
+
+    def test_shared_rate_budget_for_both_hosts(self):
+        t = [0.0]
+        slept = []
+
+        def sleep(d):
+            slept.append(d)
+            t[0] += d
+        rl = RateLimiter({"prosperopatches.com": 1.0}, clock=lambda: t[0], sleep=sleep,
+                         groups={"cdn.prosperopatches.com": "prosperopatches.com"})
+        for h in ("prosperopatches.com", "cdn.prosperopatches.com", "prosperopatches.com"):
+            rl.wait(h)
+        self.assertAlmostEqual(sum(slept), 2.0)
+
+    def test_build_registers_pic0_and_hides_it_from_sources(self):
+        provs, _ = build.make_providers(["pic0"], FakeWeb({}, {}), datetime.date(2026, 10, 11), {})
+        self.assertEqual([p.name for p in provs], ["pic0"])
+        doc, _ = build.build_document([], {}, ["steam", "pic0"],
+                                      datetime.datetime(2026, 10, 11, tzinfo=datetime.timezone.utc))
+        self.assertEqual(doc["sources"], ["steam"])
+        self.assertIn("pic0", doc["attribution"])
 
 
 class CatalogueExportTests(unittest.TestCase):

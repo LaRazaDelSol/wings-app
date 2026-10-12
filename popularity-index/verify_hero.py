@@ -3,8 +3,10 @@
 
   python verify_hero.py out/popularity.v1.json [--fix] [--sample 25]
 
-Steam `library_hero.jpg` does not exist for every app; with --fix a 404 is replaced by the same app's
-`header.jpg` if that exists, otherwise the `hero` field is dropped. Without --fix it only reports.
+Checks `hero` and `heroLow`. Steam `library_hero.jpg` does not exist for every app; with --fix a 404 is
+replaced by the same app's `header.jpg` if that exists, otherwise `hero` is dropped (and `heroLow` with it,
+since it only ever accompanies a hero). A dead `heroLow` alone is just dropped. Without --fix it only reports.
+Image shape is enforced by the builder (ratio 1.5-3.2); this script only checks that the URLs answer.
 One request per URL, 1 req/s, honest User-Agent from WINGS_CONTACT. Python 3 stdlib only."""
 import json
 import os
@@ -33,15 +35,25 @@ def verify(doc, check, fix=False, sample=None, sleep=lambda s: None):
     for tid in ids:
         rec = doc["titles"][tid]
         sleep(1.0)
-        if check(rec["hero"]):
+        hero_ok = check(rec["hero"])
+        low_ok = True
+        if "heroLow" in rec:
+            sleep(1.0)
+            low_ok = check(rec["heroLow"])
+        if hero_ok and low_ok:
             continue
         bad.append(tid)
-        if fix:
+        if not fix:
+            continue
+        if not low_ok:
+            del rec["heroLow"]
+        if not hero_ok:
             alt = rec["hero"].replace("library_hero.jpg", "header.jpg")
             if alt != rec["hero"] and check(alt):
                 rec["hero"] = alt
             else:
                 del rec["hero"]
+                rec.pop("heroLow", None)
     return len(ids), bad
 
 

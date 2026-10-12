@@ -14,8 +14,12 @@ imputation). A title with no signal gets no record at all.
 rating      = mean of raw (unshrunk) ratings of the available rating sources, weighted by QUAL_WEIGHTS.
 ratingCount = sum of rating counts of those sources.   (both absent when no rating source matched)
 confidence  = min match confidence over the signals used.
-hero        = optional https artwork URL (steam library_hero, else igdb artwork/screenshot), only from a
-              signal with confidence >= HERO_MIN_CONFIDENCE and not ambiguous. Never affects the score.
+hero        = optional https artwork URL, best first: pic0 (1920x1080 PS5 background), IGDB screenshot, IGDB
+              artwork (both ~16:9 only), Steam library_hero (3.1:1). Only from a signal with confidence
+              >= 0.85 (HERO_MIN_CONFIDENCE) and not ambiguous; never an image whose ratio is outside 1.5-3.2.
+heroLow     = optional small ~16:9 https URL (IGDB t_screenshot_big) for a fast first paint; only present
+              next to a hero and when different from it. Neither affects the score.
+Art-only sources (pic0) are left out of "sources" and "confidence" and never create a record by themselves.
 """
 import bisect
 
@@ -56,23 +60,49 @@ def source_means(signals_by_title):
 
 
 HERO_MIN_CONFIDENCE = 0.85  # matcher.ACCEPT: art is only attached to confidently matched, unambiguous titles
-HERO_SOURCES = ("steam", "igdb")  # preference order
+HERO_SOURCES = ("pic0", "igdb", "steam")  # preference order (igdb already prefers screenshot over artwork)
+ART_ONLY = ("pic0",)
+MIN_RATIO, MAX_RATIO = 1.5, 3.2
+URL_MAX = 300
+
+
+def _url_ok(url):
+    if not isinstance(url, str) or not url.startswith("https://") or len(url) > URL_MAX:
+        return False
+    host = url[len("https://"):].split("/", 1)[0]
+    return bool(host) and " " not in url and "@" not in host
+
+
+def _usable(s):
+    return bool(s) and not s.ambiguous and s.confidence >= HERO_MIN_CONFIDENCE
+
+
+def pick_art(sigs):
+    """(hero, hero_low), each a URL or None. hero_low is None when there is no hero or it equals hero."""
+    by = {s.source: s for s in sigs}
+    hero = None
+    for src in HERO_SOURCES:
+        s = by.get(src)
+        ratio = getattr(s, "image_ratio", None)
+        if (_usable(s) and _url_ok(getattr(s, "image_url", None))
+                and isinstance(ratio, (int, float)) and MIN_RATIO <= ratio <= MAX_RATIO):
+            hero = s.image_url
+            break
+    low = None
+    s = by.get("igdb")
+    if hero and _usable(s) and _url_ok(getattr(s, "low_url", None)) and s.low_url != hero:
+        low = s.low_url
+    return hero, low
 
 
 def pick_hero(sigs):
-    by = {s.source: s for s in sigs}
-    for src in HERO_SOURCES:
-        s = by.get(src)
-        url = getattr(s, "image_url", None)
-        if (s and url and not s.ambiguous and s.confidence >= HERO_MIN_CONFIDENCE
-                and url.startswith("https://")):
-            return url
-    return None
+    return pick_art(sigs)[0]
 
 
 def blend_one(sigs, tables, means):
     pop, qual, raw = [], [], []
-    for s in sigs:
+    scored = [s for s in sigs if s.source not in ART_ONLY]
+    for s in scored:
         if s.attention is not None and s.source in tables:
             pop.append((POP_WEIGHTS[s.source], _percentile(tables[s.source], s.attention)))
         if s.rating is not None and s.source in QUAL_WEIGHTS:
@@ -87,18 +117,20 @@ def blend_one(sigs, tables, means):
         groups.append((W_QUALITY, _wmean(qual)))
     if not groups:
         return None
-    rec = {"score": int(round(_wmean(groups))), "sources": sorted(s.source for s in sigs),
-           "confidence": round(min(s.confidence for s in sigs), 2)}
-    hero = pick_hero(sigs)
+    rec = {"score": int(round(_wmean(groups))), "sources": sorted(s.source for s in scored),
+           "confidence": round(min(s.confidence for s in scored), 2)}
+    hero, low = pick_art(sigs)
     if hero:
         rec["hero"] = hero
+        if low:
+            rec["heroLow"] = low
     if raw:
         rec["rating"] = int(round(_wmean([(w, r) for w, r, _ in raw])))
         rec["ratingCount"] = sum(n for _, _, n in raw)
     return rec
 
 
-def blend(signals_by_title, fetched_at):
+def blend(signals_by_title, fetched_at=None):
     """signals_by_title: {titleId: [Signal]} -> {titleId: record} (sorted by titleId)."""
     tables, means = percentile_tables(signals_by_title), source_means(signals_by_title)
     out = {}
@@ -106,6 +138,5 @@ def blend(signals_by_title, fetched_at):
         sigs = signals_by_title[tid]
         rec = blend_one(sigs, tables, means) if sigs else None
         if rec:
-            rec["fetchedAt"] = fetched_at
             out[tid] = rec
     return out

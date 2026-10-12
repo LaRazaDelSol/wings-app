@@ -29,14 +29,16 @@ def _where(url):
 class RateLimiter:
     """Spaces requests per host. Thread safe; sleeping happens outside the lock."""
 
-    def __init__(self, intervals=None, default=0.25, clock=time.monotonic, sleep=time.sleep):
+    def __init__(self, intervals=None, default=0.25, clock=time.monotonic, sleep=time.sleep, groups=None):
         self.intervals = dict(intervals or {})
+        self.groups = dict(groups or {})  # host -> shared bucket, so related hosts share one budget
         self.default = default
         self._next = {}
         self._lock = threading.Lock()
         self._clock, self._sleep = clock, sleep
 
     def wait(self, host):
+        host = self.groups.get(host, host)
         gap = self.intervals.get(host, self.default)
         with self._lock:
             now = self._clock()
@@ -52,10 +54,12 @@ class UrlLibHttp:
         self.limiter = limiter or RateLimiter()
         self.timeout, self.retries, self._sleep = timeout, retries, sleep
 
-    def request(self, method, url, params=None, headers=None, body=None):
+    def request(self, method, url, params=None, headers=None, body=None, parse="json", limit=None):
+        """parse: 'json' (default), 'text' or 'bytes'. limit caps how many body bytes are read."""
         if params:
             url += ("&" if "?" in url else "?") + urllib.parse.urlencode(params)
-        hdr = {"User-Agent": self.user_agent, "Accept-Encoding": "gzip", "Accept": "application/json"}
+        hdr = {"User-Agent": self.user_agent, "Accept-Encoding": "gzip" if limit is None else "identity",
+               "Accept": "application/json" if parse == "json" else "*/*"}
         hdr.update(headers or {})
         data = body.encode("utf-8") if isinstance(body, str) else body
         host = urllib.parse.urlsplit(url).netloc
@@ -64,9 +68,13 @@ class UrlLibHttp:
             req = urllib.request.Request(url, data=data, headers=hdr, method=method)
             try:
                 with urllib.request.urlopen(req, timeout=self.timeout) as r:
-                    raw = r.read()
-                    if r.headers.get("Content-Encoding") == "gzip":
+                    raw = r.read() if limit is None else r.read(limit)
+                    if limit is None and r.headers.get("Content-Encoding") == "gzip":
                         raw = gzip.decompress(raw)
+                    if parse == "bytes":
+                        return raw
+                    if parse == "text":
+                        return raw.decode("utf-8", "replace")
                     return json.loads(raw.decode("utf-8"))
             except urllib.error.HTTPError as e:
                 if e.code in (429, 500, 502, 503, 504) and attempt < self.retries:
@@ -89,6 +97,17 @@ class UrlLibHttp:
     def post_json(self, url, body, headers=None, params=None, cache=True):
         return self.request("POST", url, params, headers, body)
 
+    def get_text(self, url, limit=65536, extract=None, ttl=None, cache=True):
+        """First `limit` bytes of a page as text; extract(text) may reduce it to a small value."""
+        text = self.request("GET", url, parse="text", limit=limit)
+        return extract(text) if extract else text
+
+    def get_bytes(self, url, start=0, length=64, ttl=None, cache=True):
+        """Range request for bytes [start, start+length). Reads at most `length` bytes even if the
+        server ignores Range and answers 200 with the whole file."""
+        hdr = {"Range": "bytes=%d-%d" % (start, start + length - 1)}
+        return self.request("GET", url, headers=hdr, parse="bytes", limit=length)
+
 
 class CachedHttp:
     """Disk cache around another client. Key ignores headers (so tokens are never stored).
@@ -103,23 +122,30 @@ class CachedHttp:
         h = hashlib.sha256(raw.encode("utf-8")).hexdigest()
         return os.path.join(self.dir, h[:2], h + ".json")
 
-    def _go(self, method, url, params, headers, body, cache):
-        path = self._path(method, url, params, body) if cache else None
+    def _go(self, method, url, params, headers, body, cache, ttl=None, kind="json", limit=None, extract=None, tag=""):
+        path = self._path(method + ("" if kind == "json" else ":" + kind + tag), url, params, body) if cache else None
         if path and os.path.exists(path):
             try:
                 with open(path, "r", encoding="utf-8") as f:
                     e = json.load(f)
-                if self._clock() - e["t"] < self.ttl:
+                if self._clock() - e["t"] < (self.ttl if ttl is None else ttl):
                     if "err" in e:
                         raise HttpError(e["err"], _where(url))
-                    return e["body"]
+                    return bytes.fromhex(e["body"]) if kind == "bytes" else e["body"]
             except (ValueError, KeyError, OSError):
                 pass
         try:
-            res = self.inner.request(method, url, params, headers, body) if hasattr(self.inner, "request") \
-                else (self.inner.get_json(url, params, headers) if method == "GET"
-                      else self.inner.post_json(url, body, headers, params))
-            entry = {"t": self._clock(), "body": res}
+            if kind != "json":
+                res = self.inner.request(method, url, params, headers, body, parse=kind, limit=limit)
+                if extract and kind == "text":
+                    res = extract(res)
+                wire = res.hex() if kind == "bytes" else res
+            else:
+                res = self.inner.request(method, url, params, headers, body) if hasattr(self.inner, "request") \
+                    else (self.inner.get_json(url, params, headers) if method == "GET"
+                          else self.inner.post_json(url, body, headers, params))
+                wire = res
+            entry = {"t": self._clock(), "body": wire}
         except HttpError as e:
             if e.status != 404:
                 raise
@@ -139,3 +165,12 @@ class CachedHttp:
 
     def post_json(self, url, body, headers=None, params=None, cache=True):
         return self._go("POST", url, params, headers, body, cache)
+
+    def get_text(self, url, limit=65536, extract=None, ttl=None, cache=True):
+        """Cached page text (or extract(text), which is what gets stored). ttl in seconds."""
+        return self._go("GET", url, None, None, None, cache, ttl=ttl, kind="text", limit=limit, extract=extract)
+
+    def get_bytes(self, url, start=0, length=64, ttl=None, cache=True):
+        hdr = {"Range": "bytes=%d-%d" % (start, start + length - 1)}
+        return self._go("GET", url, None, hdr, None, cache, ttl=ttl, kind="bytes", limit=length,
+                        tag=":%d-%d" % (start, start + length - 1))
