@@ -94,6 +94,8 @@ struct Context
     // The grid tells the art service which covers are just off screen (keys
     // like "pkg:123"). Empty where there is no art service.
     std::function<void(const std::vector<std::string> &)> prefetch_art;
+    // Fetches one 16:9 game-page picture ahead of time into the disk cache (the focused tile). Empty: no art service.
+    std::function<void(const std::string &url)> prefetch_hero;
     // Where the Store grid keeps its sort, filters and favourites (the checked
     // save container, first writable wins). Empty: not persisted (preview, tests).
     std::vector<std::string> catalogue_paths;
@@ -496,6 +498,7 @@ class StoreScreen final : public Screen
     void read_facts(std::uint64_t serial, std::size_t from);
     std::vector<std::string> source_order() const;
     void prefetch_art();
+    void prefetch_hero(float dt, bool focused);
     void persist();
     void changed(bool reset_focus);
     void open_search(Feedback &feedback);
@@ -560,6 +563,7 @@ class StoreScreen final : public Screen
     bool reset_focus_ = false; // ... and put the focus back on the first tile
     std::string focus_game_;   // the focused game's id, kept across rebuilds
     int prefetch_row_ = -1; // the grid row the last art prefetch was made for
+    HeroPrefetchGate hero_gate_; // when the focused tile's 16:9 picture is fetched ahead
     std::uint64_t prefetch_serial_ = ~0ull;
     bool on_button_ = false; // the focus is on the round sort/filter button
     int index_ = 0;

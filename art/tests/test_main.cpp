@@ -411,6 +411,66 @@ void test_doh_wire()
     CHECK(p.rejected_endpoints().size() == 3);
 }
 
+void test_disk_cache_backgrounds()
+{
+    if (!begin("disk_cache: backgrounds have their own budget; stale unread guesses go first"))
+        return;
+    FakeClock clock;
+    DiskCacheConfig cfg;
+    cfg.root = tmpdir("dch") + "/art";
+    cfg.budget_bytes = 100000;
+    cfg.hero_budget_bytes = 30000; // room for two 12000-byte backgrounds
+    cfg.clock = &clock;
+    DiskCache c(cfg);
+    std::string err, out;
+    std::int64_t f = 0;
+    CHECK_MSG(c.open(&err), err);
+    const std::string big(12000, 'h'), small(1000, 'c');
+    for (int i = 0; i < 20; ++i) // covers
+    {
+        clock.advance(1);
+        CHECK(c.put("https://x.test/cover" + std::to_string(i), u8(small), small.size()));
+    }
+    // A. fresh entries are kept by age like anything else: the oldest background goes, no cover does
+    clock.advance(1);
+    CHECK(c.put("https://x.test/read-1", u8(big), big.size(), EntryKind::hero));
+    clock.advance(1);
+    CHECK(c.put("https://x.test/read-2", u8(big), big.size(), EntryKind::hero));
+    clock.advance(1);
+    CHECK(c.put("https://x.test/guess0", u8(big), big.size(), EntryKind::speculative)); // fresh guess survives
+    CHECK(!c.contains("https://x.test/read-1"));
+    CHECK(c.contains("https://x.test/read-2"));
+    CHECK(c.contains("https://x.test/guess0"));
+    for (int i = 0; i < 20; ++i)
+        CHECK(c.contains("https://x.test/cover" + std::to_string(i)));
+    // B. an hour on, the guess nobody opened goes before the background that was read
+    clock.advance(3600);
+    CHECK(c.put("https://x.test/read-3", u8(big), big.size(), EntryKind::hero));
+    CHECK(!c.contains("https://x.test/guess0"));
+    CHECK(c.contains("https://x.test/read-2"));
+    CHECK(c.contains("https://x.test/read-3"));
+    // C. reading a guess promotes it: it then lasts like a read background
+    clock.advance(1);
+    CHECK(c.put("https://x.test/guess1", u8(big), big.size(), EntryKind::speculative));
+    CHECK(c.get("https://x.test/guess1", &out, &f) == CacheGet::hit);
+    clock.advance(3600);
+    clock.advance(1);
+    CHECK(c.put("https://x.test/guess2", u8(big), big.size(), EntryKind::speculative));
+    CHECK(c.contains("https://x.test/guess1"));
+    CHECK(c.contains("https://x.test/guess2"));
+    CHECK(!c.contains("https://x.test/read-3"));
+    // the kinds survive a restart (index.v1)
+    c.flush();
+    DiskCache again(cfg);
+    CHECK(again.open(&err));
+    CHECK(again.get("https://x.test/guess1", &out, &f) == CacheGet::hit && out == big);
+    clock.advance(3600);
+    clock.advance(1);
+    CHECK(again.put("https://x.test/read-4", u8(big), big.size(), EntryKind::hero));
+    CHECK(again.contains("https://x.test/guess1")); // still counted as read after the restart
+    CHECK(!again.contains("https://x.test/guess2")); // the unread guess went
+}
+
 void test_disk_cache()
 {
     if (!begin("disk_cache: atomic write, header check, LRU, negatives, restart"))
@@ -1365,6 +1425,7 @@ int main(int argc, char **argv)
     test_dns_cache();
     test_doh_wire();
     test_disk_cache();
+    test_disk_cache_backgrounds();
     test_tls_client();
     test_tls_safety();
     test_service_basic();

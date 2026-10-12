@@ -517,6 +517,12 @@ int main()
     context.log_line = [](const std::string &line) { sys::log("[WINGS-FILES] %s", line.c_str()); };
     context.prefetch_art = [&art_source](const std::vector<std::string> &keys)
     { art_source.prefetch_keys(keys, orbit::ArtKind::cover); };
+    // The focused tile's 16:9 picture, into the disk cache only (the background lane: never ahead of what is on screen).
+    context.prefetch_hero = [&art_service](const std::string &url)
+    {
+        const std::size_t queued = art_service.prefetch({url}, wings::art::Kind::hero, wings::art::Lane::prefetch);
+        hui::sys::log("[WINGS-ART] hero prefetch %s", queued > 0 ? "queued" : "skipped (cached or not allowed)");
+    };
     context.mark = mark;
     context.loader_mark = loader_mark;
     context.app_version = app_content_version;

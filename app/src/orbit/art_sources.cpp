@@ -3,6 +3,8 @@
 
 #include "orbit/art_sources.hpp"
 
+#include "orbit/popularity.hpp"
+
 namespace orbit
 {
 
@@ -70,6 +72,45 @@ std::string prospero_icon_url(std::string_view pic0_url)
 bool hero_url_allowed(std::string_view url, HeroSource source)
 {
     return source == HeroSource::all || is_prospero_pic0_url(url);
+}
+
+std::string choose_hero(const PopularityIndex &index, const std::vector<std::string> &title_ids, HeroSource source)
+{
+    for (const std::string &id : title_ids)
+    {
+        const PopRecord *record = index.find(id);
+        if (record != nullptr && !record->hero.empty() && hero_url_allowed(record->hero, source))
+            return record->hero;
+    }
+    return {};
+}
+
+bool HeroPrefetchGate::update(const std::string &game_id, double now_s)
+{
+    if (game_id.empty())
+    {
+        game_.clear();
+        done_ = false;
+        return false;
+    }
+    if (game_id != game_)
+    {
+        game_ = game_id;
+        since_ = now_s;
+        done_ = false;
+        return false;
+    }
+    if (done_ || now_s - since_ < kDwellS || now_s - last_fetch_ < kMinGapS)
+        return false;
+    done_ = true;
+    last_fetch_ = now_s;
+    return true;
+}
+
+void HeroPrefetchGate::reset()
+{
+    game_.clear();
+    done_ = false;
 }
 
 } // namespace orbit

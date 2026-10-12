@@ -586,7 +586,11 @@ struct ArtService::Impl
             log(1, "image refused " + job.url + ": " + name(v));
             return;
         }
-        if (!disk_ok || !disk->put(job.url, r.body.data(), r.body.size()))
+        // A background fetched ahead of time (prefetch lanes) is speculative until a page reads it.
+        const EntryKind entry = job.kind != Kind::hero ? EntryKind::normal
+                                : job.lane >= Lane::prefetch ? EntryKind::speculative
+                                                             : EntryKind::hero;
+        if (!disk_ok || !disk->put(job.url, r.body.data(), r.body.size(), entry))
             keep_in_memory(job.url, std::string(reinterpret_cast<const char *>(r.body.data()), r.body.size()));
     }
 
@@ -611,6 +615,7 @@ ArtService::ArtService(ArtConfig config) : impl_(new Impl(std::move(config)))
     DiskCacheConfig dc;
     dc.root = impl_->cfg.cache_root;
     dc.budget_bytes = impl_->cfg.cache_budget_bytes;
+    dc.hero_budget_bytes = impl_->cfg.cache_budget_bytes / 4; // backgrounds are big: a quarter at most
     dc.clock = impl_->cfg.clock;
     disk_.reset(new DiskCache(dc));
     impl_->disk = disk_.get();

@@ -14,9 +14,12 @@
 #include <cstdint>
 #include <string>
 #include <string_view>
+#include <vector>
 
 namespace orbit
 {
+
+class PopularityIndex;
 
 enum class IconSource : std::uint8_t
 {
@@ -40,5 +43,30 @@ bool is_prospero_pic0_url(std::string_view url);
 std::string prospero_icon_url(std::string_view pic0_url);
 // Whether a hero address may be used under `source`.
 bool hero_url_allowed(std::string_view url, HeroSource source);
+
+// The 16:9 picture address for a game: the first of its title ids whose record has one the source allows. "" none.
+std::string choose_hero(const PopularityIndex &index, const std::vector<std::string> &title_ids, HeroSource source);
+
+// Decides when the Store grid fetches a game's 16:9 picture ahead of time (the focused tile). The picture goes to
+// the disk cache only, so that opening the page finds it there. Rules: focus has to rest on the same game for
+// `kDwellS` (scrolling past fetches nothing), a game is fetched once per time focus lands on it, and at most
+// one fetch every `kMinGapS` seconds (a long run of resting on tiles cannot pull megabytes).
+class HeroPrefetchGate
+{
+  public:
+    static constexpr double kDwellS = 0.5;
+    static constexpr double kMinGapS = 6.0;
+    // Every frame with the focused game's id ("" when no game is focused) and the time in seconds.
+    // True when its picture should be fetched now.
+    bool update(const std::string &game_id, double now_s);
+    // The grid or the setting changed under it: forget what was fetched, so a game can be fetched again.
+    void reset();
+
+  private:
+    std::string game_;
+    double since_ = 0.0;
+    bool done_ = false;
+    double last_fetch_ = -1.0e9;
+};
 
 } // namespace orbit

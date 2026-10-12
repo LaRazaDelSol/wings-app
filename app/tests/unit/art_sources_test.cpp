@@ -142,5 +142,64 @@ TEST(ArtSources, CoversResolveToTheCatalogueUnlessProsperopatchesIsChosenAndKnow
     EXPECT_EQ(posters.resolve("pkg:1", ArtKind::cover), kIcon);
 }
 
+TEST(ArtSources, ChooseHeroTakesTheFirstTitleIdWhoseArtTheSourceAllows)
+{
+    const auto index = index_with(kIgdb, kPic0); // PPSA01234 has IGDB art, PPSA05678 has Prosperopatches art
+    EXPECT_EQ(choose_hero(*index, {"PPSA01234", "PPSA05678"}, HeroSource::all), kIgdb);
+    EXPECT_EQ(choose_hero(*index, {"PPSA01234", "PPSA05678"}, HeroSource::prospero), kPic0); // skips the IGDB one
+    EXPECT_EQ(choose_hero(*index, {"PPSA01234"}, HeroSource::prospero), "");
+    EXPECT_EQ(choose_hero(*index, {"PPSA09999"}, HeroSource::all), "");
+    EXPECT_EQ(choose_hero(*index, {}, HeroSource::all), "");
+}
+
+TEST(HeroPrefetchGate, FetchesOnlyAfterFocusHasRestedOnAGameAndOnlyOnce)
+{
+    HeroPrefetchGate gate;
+    double t = 100.0;
+    EXPECT_FALSE(gate.update("g:a", t));                              // focus lands
+    EXPECT_FALSE(gate.update("g:a", t += 0.2));                       // not long enough
+    EXPECT_FALSE(gate.update("g:b", t += 0.2));                       // moved on: the clock restarts
+    EXPECT_FALSE(gate.update("g:b", t += HeroPrefetchGate::kDwellS - 0.1));
+    EXPECT_TRUE(gate.update("g:b", t += 0.2));                        // rested: fetch
+    EXPECT_FALSE(gate.update("g:b", t += 1.0));                       // once per landing
+    EXPECT_FALSE(gate.update("g:b", t += 10.0));
+}
+
+TEST(HeroPrefetchGate, ScrollingPastFetchesNothingAndTheGapLimitsTheRate)
+{
+    HeroPrefetchGate gate;
+    double t = 0.0;
+    int fetched = 0;
+    // ten games, 0.3 s each: never rests long enough
+    for (int i = 0; i < 10; ++i)
+        for (int f = 0; f < 18; ++f)
+            fetched += gate.update("g:" + std::to_string(i), t += 1.0 / 60.0) ? 1 : 0;
+    EXPECT_EQ(fetched, 0);
+    // rests on one: fetched; moves to the next and rests: held back until the gap has passed
+    for (int f = 0; f < 40; ++f)
+        fetched += gate.update("g:rest1", t += 1.0 / 60.0) ? 1 : 0;
+    EXPECT_EQ(fetched, 1);
+    for (int f = 0; f < 60; ++f) // one second on the next game
+        fetched += gate.update("g:rest2", t += 1.0 / 60.0) ? 1 : 0;
+    EXPECT_EQ(fetched, 1);
+    for (int f = 0; f < 600; ++f) // it stays focused: fetched once the gap is over
+        fetched += gate.update("g:rest2", t += 1.0 / 60.0) ? 1 : 0;
+    EXPECT_EQ(fetched, 2);
+}
+
+TEST(HeroPrefetchGate, LeavingTheGridAndComingBackAllowsAnotherLook)
+{
+    HeroPrefetchGate gate;
+    double t = 0.0;
+    gate.update("g:a", t);
+    EXPECT_TRUE(gate.update("g:a", t += 1.0));
+    EXPECT_FALSE(gate.update("", t += 10.0)); // a page opened, or the tile lost focus
+    EXPECT_FALSE(gate.update("g:a", t += 0.1));
+    EXPECT_TRUE(gate.update("g:a", t += 1.0)); // back on it, after the gap
+    gate.reset();
+    EXPECT_FALSE(gate.update("g:a", t += 10.0)); // reset: the dwell starts again
+    EXPECT_TRUE(gate.update("g:a", t += 1.0));
+}
+
 } // namespace
 } // namespace orbit

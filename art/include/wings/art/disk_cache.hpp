@@ -16,6 +16,9 @@
 //   nothing, a sample of the index is stat()ed and trusted when files exist.
 // * Eviction runs at open() and after every `evict_every_writes` puts, down
 //   to `budget_bytes` (default 96 MiB).
+// * Game-page backgrounds are 5-10 times the size of a cover, so they have a budget of their own
+//   (`hero_budget_bytes`) and cannot push covers out. A background fetched ahead of time (the focused
+//   tile) is "speculative" until a page really reads it; one nobody opened for half an hour is evicted first.
 // Thread-safe.
 #pragma once
 
@@ -33,6 +36,8 @@ struct DiskCacheConfig
     std::string root;                           // e.g. "/download0/wings/art"
     std::uint64_t budget_bytes = 96ull << 20;   // LRU eviction target
     std::uint64_t max_entry_bytes = 8ull << 20; // refuse larger payloads
+    // Backgrounds (hero and speculative entries together) may hold this much; 0: no separate limit.
+    std::uint64_t hero_budget_bytes = 24ull << 20;
     int evict_every_writes = 200;
     int index_flush_every = 64;                 // index changes between index writes
     const Clock *clock = nullptr;               // default: system clock
@@ -42,6 +47,13 @@ enum class CacheGet : std::uint8_t
 {
     miss,
     hit,
+};
+
+enum class EntryKind : std::uint8_t
+{
+    normal,      // a cover or anything else
+    hero,        // a game-page background that was asked for by a page
+    speculative, // a background fetched ahead of time and not read yet (a read makes it `hero`)
 };
 
 class DiskCache
@@ -59,7 +71,8 @@ class DiskCache
 
     // A valid entry: bytes, and when it was fetched (unix seconds).
     CacheGet get(const std::string &url, std::string *bytes, std::int64_t *fetched_at);
-    bool put(const std::string &url, const std::uint8_t *data, std::size_t size);
+    bool put(const std::string &url, const std::uint8_t *data, std::size_t size,
+             EntryKind kind = EntryKind::normal);
     void remove(const std::string &url);
     // Index lookup only (no file access): is a good entry recorded for url?
     bool contains(const std::string &url);
@@ -90,6 +103,7 @@ class DiskCache
         std::uint64_t size = 0;
         std::int64_t last_used = 0;
         bool negative = false;
+        EntryKind entry = EntryKind::normal;
         std::int64_t expires = 0; // negative records only (unix seconds)
     };
     void evict_locked();

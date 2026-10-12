@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstring>
 #include <set>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -133,12 +134,13 @@ bool DiskCache::open(std::string *error)
             long long used = 0;
             char kind = 0;
             if (std::sscanf(line.c_str(), "%16llx %llu %lld %c %llu", &h, &size, &used, &kind, &expires) == 5 &&
-                (kind == 'a' || kind == 'n'))
+                (kind == 'a' || kind == 'n' || kind == 'h' || kind == 's'))
             {
                 Item it;
                 it.size = size;
                 it.last_used = used;
                 it.negative = kind == 'n';
+                it.entry = kind == 'h' ? EntryKind::hero : (kind == 's' ? EntryKind::speculative : EntryKind::normal);
                 it.expires = static_cast<std::int64_t>(expires);
                 index_[h] = it;
             }
@@ -171,6 +173,7 @@ bool DiskCache::open(std::string *error)
             it.size = f.size;
             it.last_used = known != index_.end() ? known->second.last_used : f.mtime;
             it.negative = neg;
+            it.entry = known != index_.end() && !neg ? known->second.entry : EntryKind::normal;
             it.expires = known != index_.end() ? known->second.expires : 0;
             if (neg && it.expires == 0)
                 it.expires = clock_->unix_seconds() + 24 * 3600; // unknown: let it age out
@@ -249,6 +252,8 @@ CacheGet DiskCache::get(const std::string &url, std::string *bytes, std::int64_t
             it.size = raw.size();
         }
         it.negative = false;
+        if (it.entry == EntryKind::speculative)
+            it.entry = EntryKind::hero; // a page read it: no longer a guess
         it.last_used = clock_->unix_seconds();
         note_change_locked();
         ++stats_.hits;
@@ -265,7 +270,7 @@ CacheGet DiskCache::get(const std::string &url, std::string *bytes, std::int64_t
     return CacheGet::miss;
 }
 
-bool DiskCache::put(const std::string &url, const std::uint8_t *data, std::size_t size)
+bool DiskCache::put(const std::string &url, const std::uint8_t *data, std::size_t size, EntryKind kind)
 {
     if (!open_ || size == 0 || size > config_.max_entry_bytes)
         return false;
@@ -295,11 +300,16 @@ bool DiskCache::put(const std::string &url, const std::uint8_t *data, std::size_
     Item it;
     it.size = head.size() + size;
     it.last_used = clock_->unix_seconds();
+    // A background that is already known as read stays read when it is fetched again ahead of time.
+    it.entry = kind;
+    if (kind == EntryKind::speculative && old != index_.end() && old->second.entry == EntryKind::hero)
+        it.entry = EntryKind::hero;
     index_[h] = it;
     total_ += it.size;
     ++stats_.writes;
     ++writes_since_evict_;
-    if (total_ > config_.budget_bytes || writes_since_evict_ >= config_.evict_every_writes)
+    if (total_ > config_.budget_bytes || kind != EntryKind::normal ||
+        writes_since_evict_ >= config_.evict_every_writes)
         evict_locked();
     note_change_locked();
     return true;
@@ -426,29 +436,69 @@ void DiskCache::drop_locked(std::uint64_t h)
     }
 }
 
+constexpr std::int64_t kStaleGuessSeconds = 30 * 60;
+
 void DiskCache::evict_locked()
 {
     writes_since_evict_ = 0;
-    if (total_ <= config_.budget_bytes)
-        return;
-    // Evict to slightly under the budget so the next write does not evict again.
-    const std::uint64_t target = config_.budget_bytes - config_.budget_bytes / 32;
-    std::vector<std::pair<std::int64_t, std::uint64_t>> order; // last_used, hash
-    order.reserve(index_.size());
+    // Backgrounds first: they have a budget of their own, so a run of game pages cannot push covers out.
+    std::uint64_t hero_total = 0;
     for (const auto &kv : index_)
-        order.emplace_back(kv.second.last_used, kv.first);
-    std::sort(order.begin(), order.end());
-    for (const auto &o : order)
+        if (!kv.second.negative && kv.second.entry != EntryKind::normal)
+            hero_total += kv.second.size;
+    const bool hero_over = config_.hero_budget_bytes != 0 && hero_total > config_.hero_budget_bytes;
+    if (total_ <= config_.budget_bytes && !hero_over)
+        return;
+    const auto drop = [this](std::uint64_t hash)
     {
-        if (total_ <= target)
-            break;
-        auto it = index_.find(o.second);
+        auto it = index_.find(hash);
         if (it == index_.end())
-            continue;
-        ::unlink(path_for_hash(o.second, it->second.negative).c_str());
+            return;
+        ::unlink(path_for_hash(hash, it->second.negative).c_str());
         total_ -= it->second.size;
         index_.erase(it);
         ++stats_.evicted;
+    };
+    // Oldest first, but a background fetched ahead of time that nobody opened for half an hour goes before
+    // one that was read. A fresh guess is kept like any other recent entry (it was fetched a moment ago).
+    using Order = std::tuple<int, std::int64_t, std::uint64_t>; // rank, last_used, hash
+    const std::int64_t now = clock_->unix_seconds();
+    const auto rank = [now](const Item &item)
+    { return item.entry == EntryKind::speculative && now - item.last_used > kStaleGuessSeconds ? 0 : 1; };
+    if (hero_over)
+    {
+        std::vector<Order> order;
+        for (const auto &kv : index_)
+            if (!kv.second.negative && kv.second.entry != EntryKind::normal)
+                order.emplace_back(rank(kv.second), kv.second.last_used, kv.first);
+        std::sort(order.begin(), order.end());
+        const std::uint64_t target = config_.hero_budget_bytes - config_.hero_budget_bytes / 32;
+        for (const Order &o : order)
+        {
+            if (hero_total <= target)
+                break;
+            const auto it = index_.find(std::get<2>(o));
+            if (it == index_.end())
+                continue;
+            hero_total -= it->second.size;
+            drop(std::get<2>(o));
+        }
+    }
+    if (total_ > config_.budget_bytes)
+    {
+        // Evict to slightly under the budget so the next write does not evict again.
+        const std::uint64_t target = config_.budget_bytes - config_.budget_bytes / 32;
+        std::vector<Order> order;
+        order.reserve(index_.size());
+        for (const auto &kv : index_)
+            order.emplace_back(rank(kv.second), kv.second.last_used, kv.first);
+        std::sort(order.begin(), order.end());
+        for (const Order &o : order)
+        {
+            if (total_ <= target)
+                break;
+            drop(std::get<2>(o));
+        }
     }
     note_change_locked();
 }
@@ -476,7 +526,11 @@ void DiskCache::flush_locked()
     {
         std::snprintf(line, sizeof line, "%016" PRIx64 " %" PRIu64 " %lld %c %lld\n", kv.first,
                       kv.second.size, static_cast<long long>(kv.second.last_used),
-                      kv.second.negative ? 'n' : 'a', static_cast<long long>(kv.second.expires));
+                      kv.second.negative ? 'n'
+                      : kv.second.entry == EntryKind::hero        ? 'h'
+                      : kv.second.entry == EntryKind::speculative ? 's'
+                                                                   : 'a',
+                      static_cast<long long>(kv.second.expires));
         text += line;
     }
     fs::write_atomic(config_.root + "/index.v1", text.data(), text.size(), nullptr, 0);

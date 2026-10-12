@@ -413,6 +413,24 @@ void StoreScreen::prefetch_art()
     ctx_.prefetch_art(keys);
 }
 
+// The focused tile's 16:9 picture, fetched into the disk cache once focus has rested on it for a moment, so the
+// page it opens finds the picture there (art_sources.hpp). Nothing is kept in memory.
+void StoreScreen::prefetch_hero(float dt, bool focused)
+{
+    (void)dt;
+    std::string game_id;
+    if (ctx_.prefetch_hero && focused && view_ == View::grid && !on_button_ && pop_index_ != nullptr && index_ >= 0 &&
+        index_ < static_cast<int>(tiles_.size()))
+        game_id = games_.games[static_cast<std::size_t>(tiles_[static_cast<std::size_t>(index_)].game)].id;
+    if (!hero_gate_.update(game_id, static_cast<double>(ctx_.clock)))
+        return;
+    const GameGroup &g = games_.games[static_cast<std::size_t>(tiles_[static_cast<std::size_t>(index_)].game)];
+    const HeroSource source = prefs_source_ != nullptr ? prefs_source_->hero_source : HeroSource::all;
+    const std::string url = choose_hero(*pop_index_, g.title_ids, source);
+    if (!url.empty())
+        ctx_.prefetch_hero(url);
+}
+
 void StoreScreen::persist()
 {
     if (!ctx_.catalogue_paths.empty())
@@ -1559,6 +1577,7 @@ Intent StoreScreen::update(const InputFrame &input, float dt, Feedback &feedback
         seen_installed_ != state.installed_serial || seen_pop_ != popularity_hub().serial())
         rebuild();
     prefetch_art();
+    prefetch_hero(dt, focused);
     if (!batch_toast_.empty())
     {
         intent.toast = batch_toast_;
@@ -1752,16 +1771,7 @@ Intent StoreScreen::update(const InputFrame &input, float dt, Feedback &feedback
             header_.hero_resolved = true;
             // Settings > Art sources: every source, or only the PS5's own background (Prosperopatches).
             const HeroSource source = prefs_source_ != nullptr ? prefs_source_->hero_source : HeroSource::all;
-            std::string url;
-            for (const std::string &id : page_.title_ids)
-            {
-                const PopRecord *record = pop_index_->find(id);
-                if (record != nullptr && !record->hero.empty() && hero_url_allowed(record->hero, source))
-                {
-                    url = record->hero;
-                    break;
-                }
-            }
+            const std::string url = choose_hero(*pop_index_, page_.title_ids, source);
             if (!url.empty() && hero_urls().set(page_.art_key, url))
                 header_.hero_url = url;
             // The small stand-in is IGDB's: not used when only Prosperopatches art is wanted.
