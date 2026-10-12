@@ -1,4 +1,4 @@
-// Wings TV app - The colour system (docs/DESIGN-colour.md): place, section, meaning.
+// Wings TV app - The colour system: place, section, meaning.
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Colour answers one of four questions and nothing else. Place: one hue per tab, a soft wash

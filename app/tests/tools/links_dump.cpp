@@ -1,5 +1,5 @@
 // Wings TV app - Dumps the link parser, part sets and game grouping over a
-// recorded catalogue as TSV, in the format of tools/linkref/dump_golden.py, so
+// recorded catalogue as TSV, in the golden TSV format, so
 // the C++ port can be diffed line by line against the Python reference.
 // SPDX-License-Identifier: GPL-3.0-or-later
 //

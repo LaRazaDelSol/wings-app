@@ -84,7 +84,7 @@ This is the same setup Orbit Store asks for. Pegasus DL must be running on the c
 4. Wait about ten seconds. ShadowMountPlus registers it and a **Wings** tile appears in the Games row.
 5. Open **Wings**.
 
-To replace an older build under the same title ID, replace the file, remove the staged copies ShadowMountPlus made, then restart the jailbreak chain so the new package is mounted. To remove Wings, delete the `.ffpkg`; see section 10 of [FIRST-CONSOLE-TEST.md](docs/FIRST-CONSOLE-TEST.md).
+To replace an older build under the same title ID, replace the file, remove the staged copies ShadowMountPlus made, then restart the jailbreak chain so the new package is mounted. To remove Wings, close it, delete `/data/homebrew/PPSA99178.ffpkg` (or the folder `/data/homebrew/PPSA99178/`), and restart the jailbreak chain so the tile disappears. Optionally delete `/data/wings/` (diagnostics and a copy of the settings). Pegasus DL and its downloads are not touched.
 
 Wings writes only to its own folders: `/download0/wings/` (cover cache, settings, diagnostics, inside the title's storage) and `/data/wings/` (diagnostics and a copy of the settings, so you can read them in the file manager).
 

@@ -25,7 +25,6 @@ UI -> model.hpp / logic.hpp -> IPegasus (pegasus.hpp) -> PegasusV1 (pegasus_v1.c
 | `include/wings/json.hpp`, `src/json.cpp`, `json_writer.hpp` | Orbit's small JSON DOM reader (renamed, `\b`/`\f` quoting added) + a JSON.stringify-shaped body builder |
 | `tests/` | Plain C++ asserts (`test_harness.hpp`), 55 tests / ~3900 checks (`test_stream.cpp`: array-wise catalogue reading) |
 | `tools/smoke.cpp` | Read-only live smoke tool (GET only) |
-| `parity.csv` | route,method,adapter_fn,test,status for every Pegasus route and UI-side rule |
 
 ## Build and test
 

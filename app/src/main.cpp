@@ -359,7 +359,7 @@ int main()
 
     // ---- Cover art (wings/art): https posters, fetched by the app itself ----
     // Start-up facts first, so the very first console run is informative even
-    // if everything after this fails: see docs/FIRST-CONSOLE-TEST.md.
+    // if everything after this fails.
     const std::int64_t boot_clock = wall_clock_seconds();
     sys::log("[WINGS-ART] clock %s UTC plausible=%d", orbit::format_utc(boot_clock).c_str(),
              orbit::clock_plausible(boot_clock) ? 1 : 0);

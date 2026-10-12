@@ -48,7 +48,7 @@ class PackageSink
     virtual void package(Package &&package) = 0;
 };
 
-// One method per Pegasus route or UI flow (see parity.csv). Every method is
+// One method per Pegasus route or UI flow. Every method is
 // synchronous and may block on the transport: call from a worker thread.
 class IPegasus
 {

@@ -3,3 +3,9 @@
 *.ps1 text eol=crlf
 *.png binary
 *.ffpkg binary
+*.sha256 text eol=lf
+app/runtime/** text eol=lf
+app/tooling/** text eol=lf
+app/Makefile text eol=lf
+app/Dockerfile text eol=lf
+*.crt text eol=lf

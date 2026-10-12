@@ -1,7 +1,7 @@
 // Wings TV app - Colours and geometry of the game page header (the hero band).
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Colour comes from theme.hpp (docs/DESIGN-colour.md): the hero sits under a veil in the Store
+// Colour comes from theme.hpp: the hero sits under a veil in the Store
 // place hue (so every game page is in one family, whatever the art), the info cards are neutral
 // glass, and semantic colours appear only on values (game_header.cpp). Text colours come from
 // ui::color so they stay readable on any art (the veils keep the art dark under the words).

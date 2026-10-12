@@ -6,7 +6,7 @@
 // expression of the reference became a small matcher below; the comment on
 // each quotes the expression it replaces. Matchers find the leftmost match, as
 // Python's re.search does, and take() cuts it out of the working text, leaving
-// a space. app/tools/linkref/ holds the reference and a dump script; the unit
+// a space. The unit
 // test compares both over the recorded catalogue.
 
 #include "orbit/link_meta.hpp"

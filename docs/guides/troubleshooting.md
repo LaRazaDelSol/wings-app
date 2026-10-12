@@ -50,8 +50,7 @@ Files, Options, select the operation, Square cancels it. A large cross-drive mov
 
 ## Wings looks wrong or crashes
 
-Send `diagnostics.txt` and the `[WINGS-ART]` lines of `app.log` (and `app.prev.log` after a crash). See [FIRST-CONSOLE-TEST.md](../FIRST-CONSOLE-TEST.md) for the report form.
-
+Send `diagnostics.txt` and the `[WINGS-ART]` lines of `app.log` (and `app.prev.log` after a crash).
 ## FAQ
 
 **Does Wings download games itself?** No. Pegasus does.

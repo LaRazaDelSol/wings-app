@@ -1,4 +1,4 @@
-// Wings TV app - tests for the colour system (docs/DESIGN-colour.md): stable hues, contrast of
+// Wings TV app - tests for the colour system: stable hues, contrast of
 // text over the worst wash, and a wash that only ever animates one hue.
 // SPDX-License-Identifier: GPL-3.0-or-later
 
