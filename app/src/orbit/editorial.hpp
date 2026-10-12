@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // Two small JSON files Wings fetches over https from the project site, like the popularity data:
-//   notes.v1.json   {schemaVersion:1, notes:{titleId:"text, 1..160 characters"}}   (<= 600 notes, <= 64000 bytes)
+//   notes.v1.json   {schemaVersion:1, notes:{titleId:"text, any length"}}   (<= 600 notes, <= 64000 bytes)
 //   curated.v1.json {schemaVersion:1, items:[titleId, ...]}                         (ordered, <= 24 ids)
 // Both are switched by Wings preferences (notes_enabled, carousel_enabled). EditorialService loads the saved copy and
 // fetches both in one background job through a DocFetcher; a failure keeps the saved copy and a missing file (404)
@@ -27,7 +27,6 @@ namespace orbit
 constexpr std::size_t kEditorialNotesMaxBytes = 64000;
 constexpr std::size_t kEditorialCuratedMaxBytes = 4096;
 constexpr std::size_t kEditorialMaxNotes = 600;
-constexpr std::size_t kEditorialMaxNoteChars = 160;
 constexpr std::size_t kEditorialMaxCurated = 24;
 constexpr const char *kEditorialNotesUrl = "https://larazadelsol.github.io/wings-app/notes.v1.json";
 constexpr const char *kEditorialCuratedUrl = "https://larazadelsol.github.io/wings-app/curated.v1.json";

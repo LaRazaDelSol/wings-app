@@ -86,14 +86,16 @@ TEST(Editorial, BadNotesAreSkippedNotFatal)
                                                      "\"PPSA00008\":\"also ok\""),
                                            &data, &why))
         << why;
-    EXPECT_EQ(data.note_count(), 2u);
+    EXPECT_EQ(data.note_count(), 3u); // the long one is kept: no length limit
     EXPECT_EQ(data.note({"PPSA00001"}), "ok");
     EXPECT_EQ(data.note({"PPSA00008"}), "also ok");
-    // 160 characters is allowed, counted as characters and not bytes.
     std::string accents;
     for (int i = 0; i < 160; ++i)
         accents += "\xC3\xA9";
     ASSERT_TRUE(EditorialData::parse_notes(notes_doc("\"PPSA00001\":\"" + accents + "\""), &data, &why));
+    EXPECT_EQ(data.note_count(), 1u);
+    // No length limit: the page scales the type.
+    ASSERT_TRUE(EditorialData::parse_notes(notes_doc("\"PPSA00001\":\"" + std::string(900, 'x') + "\""), &data, &why)) << why;
     EXPECT_EQ(data.note_count(), 1u);
 }
 

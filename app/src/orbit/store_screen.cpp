@@ -2871,7 +2871,10 @@ void StoreScreen::draw_detail(Frame &frame, bool focused) const
         const float bang = type.semibold.measure("!", 21.0f);
         ui::text(list, type.semibold, "!", nx + 14.0f - bang * 0.5f, base - 1.0f, 21.0f, ui::Color::rgb(0x181818));
         ui::text(list, type.semibold, tr("Known problem"), nx + 40.0f, base - 1.0f, 21.0f, amber);
-        ui::paragraph(list, type.regular, note, nx + 40.0f, base + 32.0f, 21.0f, head_layout.text_w - 40.0f, 30.0f,
+        // Any length: the type shrinks (21 down to 14 px) until the note fits two lines, then it is cut with "...".
+        const float note_w = head_layout.text_w - 40.0f;
+        const float note_size = ui::fit_size(type.regular, note, 21.0f, 14.0f, note_w * 1.8f);
+        ui::paragraph(list, type.regular, note, nx + 40.0f, base + 32.0f, note_size, note_w, note_size * 1.43f,
                       ui::color::text2, 2);
         list.pop_opacity();
     }

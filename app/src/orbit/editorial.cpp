@@ -37,7 +37,7 @@ bool check_header(std::string_view text, std::size_t max_bytes, json::Value *roo
     return true;
 }
 
-// 1..kEditorialMaxNoteChars characters (UTF-8 code points), no control characters.
+// At least one character, no control characters (the length is not limited; the page scales the type).
 bool valid_note(const std::string &text)
 {
     std::size_t chars = 0;
@@ -49,7 +49,7 @@ bool valid_note(const std::string &text)
         if ((u & 0xC0) != 0x80)
             ++chars;
     }
-    return chars >= 1 && chars <= kEditorialMaxNoteChars;
+    return chars >= 1;
 }
 
 enum class Part

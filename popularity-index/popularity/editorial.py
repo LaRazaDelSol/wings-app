@@ -12,7 +12,6 @@ import zlib
 ID_RE = re.compile(r"^(?:PPSA|CUSA)\d{5}$")
 URL_CREDENTIALS_RE = re.compile(r"[A-Za-z][A-Za-z0-9+.\-]*://[^/\s?#]*@")
 MAX_NOTES = 600
-MAX_NOTE_CHARS = 160
 MAX_CURATED = 24
 MAX_FILE_BYTES = 64000
 MAX_DECODED_BYTES = 1000000
@@ -80,8 +79,8 @@ def validate_notes(data):
         _check_id(key, where)
         if not isinstance(val, str):
             raise EditorialError("%s: text must be a string" % where)
-        if not 1 <= len(val) <= MAX_NOTE_CHARS:
-            raise EditorialError("%s: text length must be 1..%d characters" % (where, MAX_NOTE_CHARS))
+        if len(val) < 1:
+            raise EditorialError("%s: text must not be empty" % where)
         if _has_control(val):
             raise EditorialError("%s: text contains control characters" % where)
         if URL_CREDENTIALS_RE.search(val):
