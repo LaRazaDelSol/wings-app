@@ -77,7 +77,7 @@ Libraries, fonts and versions are listed in full in [CREDITS.md](CREDITS.md). If
 
 This is the same setup Orbit Store asks for. Pegasus DL must be running on the console when you open Wings.
 
-1. Download `PPSA99178.ffpkg` from the [latest release](../../releases/latest).
+1. Download `PPSA99178.ffpkg` from the [latest release](https://github.com/LaRazaDelSol/wings-app/releases/latest).
 2. Check the file. On Windows, in PowerShell: `Get-FileHash .\PPSA99178.ffpkg -Algorithm SHA256`. The value must equal the SHA-256 shown on the release page (case does not matter). If it does not, download again.
 3. Copy the file to `/data/homebrew/` on the console (FTP or your usual file transfer). Check that the size on the console equals the size on the release page.
 4. Wait about ten seconds. ShadowMountPlus registers it and a **Wings** tile appears in the Games row.

@@ -7,7 +7,7 @@
 #      WITH_PREVIEW=1 (default) renders the preview pictures, WITH_TEST=1 runs `make test`.
 set -euo pipefail
 WING="${WING:-/root/wb}"
-SRC="${SRC:-$WING/wings}"
+SRC="${SRC:-$WING}"
 WORK="${WORK:-/root/build/wings}"
 OUT="${OUT:-$SRC/build-out}"
 PREVIEW_OUT="${PREVIEW_OUT:-$SRC/app/preview-out}"
@@ -18,7 +18,7 @@ t0=$(date +%s); lap(){ echo "== [$(( $(date +%s)-t0 ))s] $*"; }
 lap "copy source to ext4 ($WORK)"
 mkdir -p "$WORK" "$OUT"
 # wings/ as a whole, so that ../i18n exists next to app/ (build.sh copies catalogues from it).
-rsync -a --delete --exclude /core --exclude /art --exclude /build-out --exclude /app/.deps \
+rsync -a --delete --exclude /.git --exclude /.github --exclude /popularity-index --exclude /core --exclude /art --exclude /build-out --exclude /app/.deps \
   --exclude /app/build --exclude /app/dist --exclude /app/preview-out \
   --exclude /app/src/platform/wings_art --exclude /app/assets/ca-bundle.crt "$SRC/" "$WORK/"
 # The Pegasus adapter library (wings/core) is compiled into the app: its headers and
