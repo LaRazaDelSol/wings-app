@@ -793,4 +793,94 @@ void FolderPicker::draw(Context &ctx, Frame &frame) const
     prompt_.draw(ctx, frame);
 }
 
+// ---- FolderAsk ----
+
+bool FolderAsk::guard(Context &ctx, std::function<void()> resume)
+{
+    if (!ctx.folder_confirmed || is_open())
+        return is_open();
+    const Snapshot &state = ctx.store.state();
+    if (ctx.folder_gate.check(ctx.folder_confirmed(), state.have_settings) ==
+        FirstDownloadGate::Verdict::proceed)
+        return false;
+    ctx.folder_gate.defer(std::move(resume));
+    std::vector<ListItem> items(2);
+    items[0].label = tr("Keep this folder");
+    items[1].label = tr("Choose folder");
+    list_.open(tr("Download folder"),
+               tr("Downloads will be saved to {folder}. Keep this folder or choose another.",
+                  {{"folder", state.settings.download_root}}),
+               std::move(items), ListDialog::Mode::single);
+    opened_ = true;
+    return true;
+}
+
+void FolderAsk::answered(Context &ctx)
+{
+    ctx.folder_gate.answered();
+    if (ctx.confirm_folder)
+        ctx.confirm_folder();
+    if (std::function<void()> resume = ctx.folder_gate.take_pending())
+        resume();
+}
+
+void FolderAsk::update(Context &ctx, const hui::InputFrame &input, float dt, hui::ui::Feedback &feedback)
+{
+    static const hui::InputFrame idle{};
+    if (opened_)
+        feedback.play(hui::audio::Cue::modal_open);
+    opened_ = false;
+    const bool had_list = list_.is_open();
+    const bool had_picker = picker_.is_open();
+    const bool had_notice = notice_.is_open();
+    if (notice_.update(had_notice ? input : idle, dt, feedback) != ConfirmDialog::Result::none)
+        return;
+    const ListDialog::Result listed = list_.update(had_list ? input : idle, dt, feedback);
+    if (listed == ListDialog::Result::chosen)
+    {
+        if (list_.chosen() == 0)
+            answered(ctx);
+        else
+        {
+            picker_.open(ctx.store, tr("Download folder"), ctx.store.state().settings.download_root);
+            feedback.play(hui::audio::Cue::modal_open);
+        }
+    }
+    else if (listed == ListDialog::Result::cancelled)
+    {
+        (void)ctx.folder_gate.take_pending(); // nothing starts; the next download asks again
+    }
+    const FolderPicker::Result picked = picker_.update(ctx.store, had_picker ? input : idle, dt, feedback);
+    if (picked == FolderPicker::Result::chosen)
+    {
+        SettingsPatch patch;
+        patch.has_root = true;
+        patch.root = picker_.chosen();
+        ctx.store.call<SettingsView>(
+            Store::lane_admin, [patch](Backend &b) { return b.settings_update(patch); },
+            [this, &ctx](Result<SettingsView> &&r)
+            {
+                if (!r.ok())
+                {
+                    (void)ctx.folder_gate.take_pending();
+                    notice_.notice(tr("Pegasus DL did not accept that"), r.error);
+                    return;
+                }
+                ctx.store.apply_settings(r.value);
+                answered(ctx);
+            });
+    }
+    else if (picked == FolderPicker::Result::cancelled)
+    {
+        (void)ctx.folder_gate.take_pending();
+    }
+}
+
+void FolderAsk::draw(Context &ctx, Frame &frame) const
+{
+    list_.draw(ctx, frame);
+    picker_.draw(ctx, frame);
+    notice_.draw(ctx, frame);
+}
+
 } // namespace orbit

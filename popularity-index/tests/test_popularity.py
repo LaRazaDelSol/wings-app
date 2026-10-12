@@ -9,7 +9,7 @@ import unittest
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from popularity import blend, build, matcher, report  # noqa: E402
+from popularity import blend, build, editorial, matcher, report  # noqa: E402
 from popularity.matcher import Candidate  # noqa: E402
 from popularity.models import Entry, ProviderError, Signal  # noqa: E402
 from popularity.net import CachedHttp, HttpError, RateLimiter  # noqa: E402
@@ -569,6 +569,77 @@ class ExtractTests(unittest.TestCase):
         rows = extract_titles.extract(os.path.join(FIX, "library_mini.json"))
         self.assertEqual(rows, [{"titleId": "CUSA00002", "title": "Elden Ring"},
                                 {"titleId": "PPSA00001", "title": "Hades II"}])
+
+
+class EditorialTests(unittest.TestCase):
+    NOTES = {"schemaVersion": 1, "notes": {"PPSA01234": "Short factual text.", "CUSA00001": "Another."}}
+
+    @staticmethod
+    def pack(obj):
+        import base64
+        import gzip
+        raw = json.dumps(obj, separators=(",", ":")).encode("utf-8")
+        return base64.b64encode(gzip.compress(raw, 9, mtime=0)).decode("ascii")
+
+    def test_unset_or_blank_publishes_nothing(self):
+        self.assertEqual(editorial.build(None, None), {})
+        self.assertEqual(editorial.build("", "  \n"), {})
+
+    def test_plain_and_packed_agree(self):
+        a = editorial.build(json.dumps(self.NOTES), None)
+        b = editorial.build(self.pack(self.NOTES), None)
+        self.assertEqual(a, b)
+        self.assertEqual(json.loads(a["notes.v1.json"]), self.NOTES)
+
+    def test_curated_ok_and_order_kept(self):
+        out = editorial.build(None, json.dumps({"schemaVersion": 1, "items": ["PPSA00002", "PPSA00001"]}))
+        self.assertEqual(json.loads(out["curated.v1.json"])["items"], ["PPSA00002", "PPSA00001"])
+
+    def test_bad_notes_rejected_without_echo(self):
+        secret = "SECRETTEXT"
+        bad = [
+            {"notes": {"PPSA1234": secret}},
+            {"notes": {"PPSA01234": ""}},
+            {"notes": {"PPSA01234": secret * 40}},
+            {"notes": {"PPSA01234": secret + "\x07"}},
+            {"notes": {"PPSA01234": "see https://user:pw@example.com/" + secret}},
+            {"notes": {"PPSA01234": 5}},
+            {"notes": {"PPSA%05d" % i: "x" for i in range(601)}},
+            {"notes": {"PPSA%05d" % i: "x" * 160 for i in range(500)}},
+            ["not", "an", "object"],
+        ]
+        for doc in bad:
+            with self.assertRaises(editorial.EditorialError) as cm:
+                editorial.build(json.dumps(doc), None)
+            self.assertNotIn(secret, str(cm.exception))
+
+    def test_bad_curated_rejected(self):
+        for doc in (["PPSA00001", "PPSA00001"], ["bad"], ["PPSA%05d" % i for i in range(25)], {"items": "x"}):
+            with self.assertRaises(editorial.EditorialError):
+                editorial.build(None, json.dumps(doc))
+
+    def test_garbage_and_bad_pack_rejected(self):
+        for raw in ("not base64 !!", "aGVsbG8=", "{broken"):
+            with self.assertRaises(editorial.EditorialError) as cm:
+                editorial.build(raw, None)
+            self.assertNotIn("aGVsbG8", str(cm.exception))
+
+    def test_invalid_one_writes_nothing(self):
+        with tempfile.TemporaryDirectory() as d:
+            with self.assertRaises(editorial.EditorialError):
+                editorial.write(editorial.build(json.dumps(self.NOTES), json.dumps(["bad"])), d)
+            self.assertEqual(os.listdir(d), [])
+
+    def test_cli_writes_only_set_files(self):
+        import build_editorial
+        with tempfile.TemporaryDirectory() as d:
+            os.environ["T_NOTES"] = json.dumps(self.NOTES)
+            os.environ.pop("T_CUR", None)
+            try:
+                self.assertEqual(build_editorial.main(["--notes-env", "T_NOTES", "--curated-env", "T_CUR", "--out", d]), 0)
+            finally:
+                del os.environ["T_NOTES"]
+            self.assertEqual(os.listdir(d), ["notes.v1.json"])
 
 
 if __name__ == "__main__":

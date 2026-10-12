@@ -887,6 +887,11 @@ std::size_t ArtService::prefetch(const std::vector<std::string> &urls, Kind kind
     return queued;
 }
 
+bool ArtService::is_cached(const std::string &url)
+{
+    return !url.empty() && disk_->contains(url);
+}
+
 void ArtService::cancel_background()
 {
     Impl &s = *impl_;

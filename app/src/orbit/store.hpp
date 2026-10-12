@@ -16,6 +16,7 @@
 #pragma once
 
 #include "orbit/backend.hpp"
+#include "orbit/download_folder.hpp"
 #include "orbit/model.hpp"
 #include "orbit/thread.hpp"
 
@@ -201,6 +202,24 @@ class Store
     }
     void refresh_now();
 
+    // ---- default download folder (B-13) ----
+    // Frame thread, call once settings are known (every frame is fine): if
+    // Pegasus reported an EMPTY downloadRoot, create `folder` (mkdir; "already
+    // exists" counts as created) and make it the root. Never touches a
+    // non-empty root. At most once per run, success or failure: no retry loop.
+    // No busy state, no error toast; a failure shows in default_folder_status().
+    void ensure_default_download_folder(const std::string &folder = download_folder::default_path);
+    // "" while nothing failed; else the English reason the default was not set.
+    const std::string &default_folder_status() const
+    {
+        return default_folder_status_;
+    }
+    // True once ensure_default_download_folder() decided to act (this run).
+    bool default_folder_tried() const
+    {
+        return default_folder_tried_;
+    }
+
     // ---- queue ----
     void job_action(const std::string &job_id, const std::string &action);
     void clear_finished();
@@ -278,6 +297,8 @@ class Store
     Backend &backend_;
     Inbox inbox_;
     Snapshot state_;
+    bool default_folder_tried_ = false; // frame thread
+    std::string default_folder_status_; // frame thread
     Channel channel_[7];
 
     // Shared with the workers.

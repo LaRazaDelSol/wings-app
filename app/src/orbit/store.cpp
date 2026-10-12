@@ -101,6 +101,43 @@ void Store::apply_settings(const SettingsView &value)
     ++state_.serial;
 }
 
+void Store::ensure_default_download_folder(const std::string &folder)
+{
+    const FolderNeed need = folder_need(state_.have_settings, state_.settings.download_root,
+                                        default_folder_tried_);
+    if (!need.set_default)
+        return;
+    default_folder_tried_ = true;
+    submit(-1,
+           [this, folder]
+           {
+               Outcome out;
+               std::string failure;
+               const Result<bool> made = backend_.mkdir(folder);
+               // 409: the folder is already there, which is all we need.
+               if (!made.ok() && made.status != 409)
+                   failure = made.error.empty() ? "The default download folder could not be created."
+                                                : made.error;
+               if (failure.empty())
+               {
+                   SettingsPatch patch;
+                   patch.has_root = true;
+                   patch.root = folder;
+                   Result<SettingsView> updated = backend_.settings_update(patch);
+                   if (updated.ok())
+                   {
+                       inbox_.post([this, value = std::move(updated.value)]() mutable
+                                   { apply_settings(value); });
+                       return out;
+                   }
+                   failure = updated.error.empty() ? "The default download folder was refused."
+                                                   : updated.error;
+               }
+               inbox_.post([this, failure] { default_folder_status_ = failure; });
+               return out;
+           });
+}
+
 void Store::apply_installed(const std::vector<InstalledGame> &value)
 {
     state_.installed = value;

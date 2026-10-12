@@ -64,6 +64,14 @@ App::App(Context &context)
     context.after_install = &after_install_;
     // The Store ranks links with the preferences Settings > Wings keeps.
     store_.use_prefs(&settings_.local_prefs());
+    // The first download asks about the download folder once (panels.hpp FolderAsk); the answer is a Wings pref.
+    context.folder_confirmed = [this] { return settings_.local_prefs().folder_confirmed; };
+    context.confirm_folder = [this]
+    {
+        WingsLocalPrefs prefs = settings_.local_prefs();
+        prefs.folder_confirmed = true;
+        settings_.set_local_prefs(prefs);
+    };
     // Settings > Wings > Reset Store grid: sort and filters only, favourites stay.
     context.reset_store_grid = [this]
     {
@@ -145,6 +153,9 @@ void App::update(const InputFrame &input, float dt, Feedback &feedback)
     ctx_.store.want_logs(false);
     ctx_.store.want_installed(false);
     toast_time_ = std::max(0.0f, toast_time_ - dt);
+    // Pegasus DL without a download folder gets the default one, once (shown in Settings > Pegasus DL).
+    if (ctx_.store.state().have_settings)
+        ctx_.store.ensure_default_download_folder();
     // A finished download asks ShadowMount to scan (whichever tab shows; the Downloads tab
     // draws the answer). The setting is Settings > Pegasus DL > After a download finishes.
     after_install_.set_mode(settings_.local_prefs().after_download);

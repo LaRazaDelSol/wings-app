@@ -367,6 +367,38 @@ TEST(HeaderState, ResetPutsTheFocusOnInstallWithTheHeaderShown)
     EXPECT_FALSE(s.hero_resolved);
 }
 
+TEST(HeroWashHold, HoldsOnlyForACachedHeroInTheFirst300Ms)
+{
+    EXPECT_TRUE(hold_cover_wash(true, true, 0.0f, false));
+    EXPECT_TRUE(hold_cover_wash(true, true, 0.29f, false));
+    EXPECT_FALSE(hold_cover_wash(true, true, 0.3f, false));  // the wash comes back after 300 ms
+    EXPECT_FALSE(hold_cover_wash(true, true, 2.0f, false));
+    EXPECT_FALSE(hold_cover_wash(false, true, 0.0f, false)); // no hero address
+    EXPECT_FALSE(hold_cover_wash(true, false, 0.0f, false)); // not on disk: the wash fills the wait
+    EXPECT_FALSE(hold_cover_wash(true, true, 0.0f, true));   // refused shape
+}
+
+TEST(HeroWashHold, StateResetAndHooks)
+{
+    GameHeaderState s;
+    s.hero_cached = true;
+    s.hero_logged = true;
+    s.update(0.5f, false);
+    EXPECT_GT(s.open_s, 0.4f);
+    s.reset();
+    EXPECT_FALSE(s.hero_cached);
+    EXPECT_FALSE(s.hero_logged);
+    EXPECT_EQ(s.open_s, 0.0f);
+
+    hero_hooks() = HeroHooks{};
+    EXPECT_FALSE(hero_is_cached("https://cdn.example.com/h.webp")); // no hook
+    hero_hooks().cached = [](const std::string &url) { return url == "https://cdn.example.com/h.webp"; };
+    EXPECT_TRUE(hero_is_cached("https://cdn.example.com/h.webp"));
+    EXPECT_FALSE(hero_is_cached("https://cdn.example.com/other.webp"));
+    EXPECT_FALSE(hero_is_cached(""));
+    hero_hooks() = HeroHooks{};
+}
+
 TEST(HeaderState, LeavingTheHeaderSlidesTheListUp)
 {
     GameHeaderState s;

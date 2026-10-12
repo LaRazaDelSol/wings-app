@@ -21,6 +21,7 @@
 #include "orbit/ui.hpp"
 
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <string>
 #include <string_view>
@@ -76,6 +77,25 @@ struct HeroPlacement
     ui::Rect uv{0.0f, 0.0f, 1.0f, 1.0f};
 };
 HeroPlacement place_hero(int width, int height, const ui::Rect &band);
+
+// ---- holding the cover wash back for a cached hero (B-14 step 1) ----
+
+constexpr float kHeroWashHoldS = 0.3f;
+// True while the blurred cover wash should NOT be drawn (only the dark gradient), because the
+// 16:9 picture is on disk and is about to fade in. False when there is no hero address, the file
+// is not cached, the picture was refused (unusable shape), or the hold (300 ms from page open) ran out.
+bool hold_cover_wash(bool has_hero_address, bool cached, float since_open_s, bool hero_refused);
+
+// Hooks the app wires once (main.cpp); both optional. cached answers "is this URL on disk";
+// log writes one line to the title log.
+struct HeroHooks
+{
+    std::function<bool(const std::string &url)> cached;
+    std::function<void(const std::string &line)> log;
+};
+HeroHooks &hero_hooks();
+// The cached fact for a url ("" or no hook: false). Call where hero_url is set.
+bool hero_is_cached(const std::string &url);
 
 // ---- the info cards ----
 
@@ -190,6 +210,9 @@ struct GameHeaderState
     std::string hero_url;       // registered for this page ("" none)
     std::string hero_low_url;   // the small stand-in registered for this page ("" none)
     bool hero_resolved = false; // the popularity index has been asked for this page
+    bool hero_cached = false;   // the hero_url's file is already on disk (hero_is_cached, set with hero_url)
+    float open_s = 0.0f;        // seconds since the page opened (update)
+    mutable bool hero_logged = false; // the once-per-open "first hero frame" line has been written
     std::vector<HeaderMore> more; // the open "more" menu's rows
 
     void reset();                        // a page opens

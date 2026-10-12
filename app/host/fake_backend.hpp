@@ -137,6 +137,14 @@ class FakeBackend final : public Backend
     std::vector<std::string> pkg_installs() const;
     std::string last_token(bool torbox) const;
     int settings_writes() const;
+    // Starts a test with this download root ("" = Pegasus reports none yet).
+    void set_download_root(const std::string &root);
+    // Every mkdir() call received, in order (also the refused ones).
+    std::vector<std::string> mkdir_calls() const;
+    // mkdir() answers a host error (403) without creating anything.
+    void set_mkdir_fails(bool fails);
+    // Folder of the last accepted root update ("" before any).
+    std::string last_root_written() const;
     int settings_reads() const; // settings() calls that were answered
     int logs_cleared() const;
     int apr_updates() const;
@@ -187,6 +195,9 @@ class FakeBackend final : public Backend
     std::string last_collision_;
     bool apr_manifest_ok_ = true;
     int settings_writes_ = 0;
+    std::vector<std::string> mkdir_calls_;
+    bool mkdir_fails_ = false;
+    std::string last_root_written_;
     int settings_reads_ = 0;
     int logs_cleared_ = 0;
     int apr_updates_ = 0;

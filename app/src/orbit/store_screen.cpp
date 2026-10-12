@@ -9,6 +9,7 @@
 // and routes the controller.
 
 #include "orbit/screens.hpp"
+#include "orbit/editorial.hpp"
 #include "orbit/filter_menu.hpp"
 
 #include "orbit/model.hpp"
@@ -215,7 +216,8 @@ void StoreScreen::focus()
 
 bool StoreScreen::modal() const
 {
-    return prompt_.is_open() || confirm_.is_open() || list_.is_open() || panel_ != Panel::none ||
+    return prompt_.is_open() || confirm_.is_open() || list_.is_open() || folder_ask_.is_open() ||
+           panel_ != Panel::none ||
            ctx_.store.link_action().busy;
 }
 
@@ -238,7 +240,7 @@ ui::Rect StoreScreen::tile_rect(int index) const
     const int col = index % kColumns;
     const int row = index / kColumns;
     return {kGridLeft + static_cast<float>(col) * kPitch,
-            kGridTop + static_cast<float>(row) * kPitch - scroll_.value, kTile, kTile};
+            kGridTop + carousel_extra() + static_cast<float>(row) * kPitch - scroll_.value, kTile, kTile};
 }
 
 // Settings > Wings > Downloads: the grid's tiers and the page's order follow
@@ -386,6 +388,60 @@ void StoreScreen::rebuild()
         focus_game_.clear();
     tile_focus_.assign(tiles_.size(), 0.0f);
     prefetch_row_ = -1; // the covers to warm depend on the list
+
+    // The curated carousel: the featured games the player's own catalogue has, in the default view only.
+    {
+        EditorialHub &editorial = editorial_hub();
+        seen_editorial_ = editorial.serial();
+        std::vector<int> found;
+        if (editorial.carousel_enabled())
+            found = resolve_carousel(editorial.curated_ids(), games_.games);
+        const WingsLocalPrefs &prefs = prefs_source_ != nullptr ? *prefs_source_ : own_prefs_;
+        const HeroSource source = prefs.hero_source;
+        const bool was_on = carousel_on_;
+        carousel_on_ = carousel_shown(editorial.carousel_enabled(), found.size(), query_.empty(), state_.filtered(),
+                                      effective_sort(state_.sort, &pop_view_) == SortMode::az, tiles_.size());
+        // Keep the slide on the same game when the list only changed around it.
+        const int kept = car_slide_ >= 0 && car_slide_ < static_cast<int>(carousel_games_.size())
+                             ? carousel_games_[static_cast<std::size_t>(car_slide_)]
+                             : -1;
+        carousel_games_.clear();
+        carousel_art_.clear();
+        if (carousel_on_)
+        {
+            carousel_games_ = found;
+            const Snapshot &catalogue = snapshot;
+            for (const int g : carousel_games_)
+            {
+                const GameGroup &game = games_.games[static_cast<std::size_t>(g)];
+                CarouselArt art;
+                art.key = "pkg:" + catalogue.packages[static_cast<std::size_t>(art_package(game, catalogue.packages))].id;
+                if (pop_index_ != nullptr)
+                {
+                    art.hero_url = choose_hero(*pop_index_, game.title_ids, source);
+                    // The small stand-in is IGDB's: not used when only Prosperopatches art is wanted.
+                    if (source == HeroSource::all)
+                        art.low_url = pop_index_->hero_low(game.title_ids);
+                }
+                carousel_art_.push_back(std::move(art));
+            }
+        }
+        car_slide_ = 0;
+        for (std::size_t i = 0; i < carousel_games_.size(); ++i)
+            if (carousel_games_[i] == kept)
+                car_slide_ = static_cast<int>(i);
+        if (!carousel_on_)
+        {
+            in_carousel_ = false;
+            car_button_ = kCarouselInstall;
+        }
+        if (carousel_on_ != was_on)
+        {
+            scroll_.snap(0.0f); // the grid moved by the carousel's height: no sliding from the old place
+            car_clock_.restart();
+            car_on_slide_s_ = 0.0f;
+        }
+    }
     dirty_ = false;
 }
 
@@ -419,7 +475,8 @@ void StoreScreen::prefetch_hero(float dt, bool focused)
 {
     (void)dt;
     std::string game_id;
-    if (ctx_.prefetch_hero && focused && view_ == View::grid && !on_button_ && pop_index_ != nullptr && index_ >= 0 &&
+    if (ctx_.prefetch_hero && focused && view_ == View::grid && !on_button_ && !in_carousel_ && pop_index_ != nullptr &&
+        index_ >= 0 &&
         index_ < static_cast<int>(tiles_.size()))
         game_id = games_.games[static_cast<std::size_t>(tiles_[static_cast<std::size_t>(index_)].game)].id;
     if (!hero_gate_.update(game_id, static_cast<double>(ctx_.clock)))
@@ -979,6 +1036,11 @@ void StoreScreen::update_grid(const InputFrame &input, Feedback &feedback, Inten
         feedback.play(hui::audio::Cue::modal_open);
         return;
     }
+    if (in_carousel_ && carousel_on_ && !carousel_games_.empty())
+    {
+        update_carousel_input(input, feedback, intent);
+        return;
+    }
     if (on_button_)
     {
         if (input.nav == Direction::right)
@@ -1056,6 +1118,14 @@ void StoreScreen::update_grid(const InputFrame &input, Feedback &feedback, Inten
             moved = true;
             next = index_ - cols;
         }
+        else if (carousel_on_ && !carousel_games_.empty())
+        {
+            // Up from the first row enters the carousel (on Install).
+            in_carousel_ = true;
+            car_button_ = kCarouselInstall;
+            feedback.play(hui::audio::Cue::focus);
+            return;
+        }
         else
         {
             intent.kind = Intent::Kind::top_bar;
@@ -1088,6 +1158,159 @@ void StoreScreen::update_grid(const InputFrame &input, Feedback &feedback, Inten
         open_game(tiles_[static_cast<std::size_t>(index_)].game);
         feedback.play(hui::audio::Cue::open);
     }
+}
+
+// ---- the carousel (carousel.hpp) ----
+
+// Pad rules are documented in carousel.hpp. Cross on Install opens the game's page, exactly as Cross on its tile.
+void StoreScreen::update_carousel_input(const InputFrame &input, Feedback &feedback, Intent &intent)
+{
+    const int count = static_cast<int>(carousel_games_.size());
+    car_slide_ = std::clamp(car_slide_, 0, count - 1);
+    if (input.nav == Direction::up)
+    {
+        intent.kind = Intent::Kind::top_bar;
+        return;
+    }
+    if (input.nav == Direction::down)
+    {
+        in_carousel_ = false; // back to the grid's focused tile (always in the first row)
+        feedback.play(hui::audio::Cue::focus);
+        return;
+    }
+    if (input.nav == Direction::left || input.nav == Direction::right)
+    {
+        const CarouselStep step = carousel_step(car_slide_, car_button_, count, input.nav);
+        if (step.moved)
+        {
+            car_button_ = step.button;
+            if (step.slide_changed)
+            {
+                car_slide_ = step.slide;
+                car_in_.snap(0.0f);
+                car_on_slide_s_ = 0.0f;
+            }
+            feedback.play(hui::audio::Cue::focus);
+        }
+        else
+        {
+            refuse(feedback, input);
+        }
+        return;
+    }
+    if (input.is_pressed(Action::west))
+    {
+        const bool now = toggle_carousel_favourite();
+        feedback.play(hui::audio::Cue::select);
+        intent.toast = now ? std::string(tr("Added to favourites")) : std::string(tr("Removed from favourites"));
+        return;
+    }
+    if (input.is_pressed(Action::confirm))
+    {
+        if (car_button_ == kCarouselFavourite)
+        {
+            const bool now = toggle_carousel_favourite();
+            feedback.play(hui::audio::Cue::select);
+            intent.toast = now ? std::string(tr("Added to favourites")) : std::string(tr("Removed from favourites"));
+        }
+        else
+        {
+            open_game(carousel_games_[static_cast<std::size_t>(car_slide_)]);
+            feedback.play(hui::audio::Cue::open);
+        }
+    }
+}
+
+bool StoreScreen::toggle_carousel_favourite()
+{
+    if (car_slide_ < 0 || car_slide_ >= static_cast<int>(carousel_games_.size()))
+        return false;
+    const int game = carousel_games_[static_cast<std::size_t>(car_slide_)];
+    const bool now = toggle_game_favourite(&state_, games_.games[static_cast<std::size_t>(game)],
+                                           ctx_.store.state().packages);
+    persist();
+    for (GameTile &tile : tiles_)
+        if (tile.game == game)
+            tile.favourite = now;
+    return now;
+}
+
+// Every frame: focus fades, the auto-advance clock, the slide's pictures. Art memory is bounded by the ArtCache's
+// background budget (two textures, shared with the game page): only the current slide and the next one are asked
+// for, and the next one only once the current one is there. The slide after that goes to the disk cache only.
+void StoreScreen::update_carousel(float dt, bool focused)
+{
+    const bool on = carousel_on_ && view_ == View::grid && !carousel_games_.empty();
+    car_focus_.target = on && focused && in_carousel_ ? 1.0f : 0.0f;
+    car_focus_.update(dt, 16.0f);
+    for (int b = 0; b < 2; ++b)
+    {
+        car_btn_[b].target = b == car_button_ ? 1.0f : 0.0f;
+        car_btn_[b].update(dt, 18.0f);
+    }
+    car_in_.target = 1.0f;
+    car_in_.update(dt, 9.0f);
+    if (!on)
+        return;
+    const int count = static_cast<int>(carousel_games_.size());
+    car_slide_ = std::clamp(car_slide_, 0, count - 1);
+    car_on_slide_s_ += dt;
+    // Scrolled away (more than two thirds): nothing to advance or to load.
+    if (scroll_.value >= kCarouselExtra * 0.66f)
+        return;
+    // Auto-advance, paused while the carousel has the focus or a dialog or panel is open.
+    if (car_clock_.update(dt, in_carousel_ || modal(), count))
+    {
+        car_slide_ = carousel_wrap(car_slide_, 1, count);
+        car_in_.snap(0.0f);
+        car_on_slide_s_ = 0.0f;
+    }
+    const std::size_t cur = static_cast<std::size_t>(car_slide_);
+    const std::size_t next = static_cast<std::size_t>(carousel_wrap(car_slide_, 1, count));
+    const std::size_t after = static_cast<std::size_t>(carousel_wrap(car_slide_, 2, count));
+    // The addresses the art service resolves (cleared whenever a game page opens: set again here every frame).
+    // The current slide: the small picture, else the full one. The next slide: the small picture only.
+    HeroUrls &urls = hero_urls();
+    const auto announce = [&urls](const CarouselArt &art, bool allow_full)
+    {
+        if (!art.low_url.empty())
+            urls.set_low(art.key, art.low_url);
+        else if (allow_full && !art.hero_url.empty())
+            urls.set(art.key, art.hero_url);
+    };
+    announce(carousel_art_[cur], true);
+    const Artwork *shown = carousel_slide_art(carousel_art_[cur], true);
+    // The next slide's small picture is loaded once the current one is up (or has had its time), so the worker
+    // never serves it first. Two textures in all: the cache keeps two background pictures and no more.
+    if (count > 1 && !carousel_art_[next].low_url.empty() && (shown != nullptr || car_on_slide_s_ > 2.0f))
+    {
+        announce(carousel_art_[next], false);
+        carousel_slide_art(carousel_art_[next], false);
+    }
+    // The slide after that is only fetched into the disk cache, once.
+    if (count > 2 && ctx_.prefetch_hero && next != after && after != cur)
+    {
+        const CarouselArt &art = carousel_art_[after];
+        const std::string &url = art.low_url.empty() ? art.hero_url : art.low_url;
+        if (!url.empty() && std::find(car_prefetched_.begin(), car_prefetched_.end(), url) == car_prefetched_.end())
+        {
+            if (car_prefetched_.size() >= 32)
+                car_prefetched_.clear();
+            car_prefetched_.push_back(url);
+            ctx_.prefetch_hero(url);
+        }
+    }
+}
+
+// The slide's 16:9 picture if it is ready (asks for it otherwise): the small one when there is one, else the full
+// one (only when allow_full: the current slide). Null: none, not yet, or not a usable shape.
+const Artwork *StoreScreen::carousel_slide_art(const CarouselArt &art, bool allow_full) const
+{
+    if (!art.low_url.empty())
+        return ctx_.art.get(art.key, ArtKind::hero_low);
+    if (allow_full && !art.hero_url.empty())
+        return ctx_.art.get(art.key, ArtKind::hero);
+    return nullptr;
 }
 
 // The existing "download this link" flow for one (packageId, linkIndex).
@@ -1180,6 +1403,8 @@ void StoreScreen::activate_ref(const LinkRef &ref, Feedback &feedback)
 
 void StoreScreen::start_single(const std::string &service)
 {
+    if (folder_ask_.guard(ctx_, [this, service] { start_single(service); }))
+        return; // the first download asks for the folder; it resumes here
     ctx_.store.start_link(pending_ref_.package_id, pending_ref_.link_index, service);
     popularity_hub().count_download(page_.title_ids); // "Your most downloaded"
     single_ref_ = pending_ref_;
@@ -1273,6 +1498,8 @@ void StoreScreen::start_batch(const std::string &service)
     if (parts_plan_.refs.empty() || parts_mirror_ < 0 ||
         parts_mirror_ >= static_cast<int>(page_.page.mirrors.size()) || batch_.active)
         return;
+    if (folder_ask_.guard(ctx_, [this, service] { start_batch(service); }))
+        return; // asked once for the whole set, not per part
     popularity_hub().count_download(page_.title_ids);
     std::vector<int> numbers;
     for (const LinkRef &ref : parts_plan_.refs)
@@ -1574,7 +1801,8 @@ Intent StoreScreen::update(const InputFrame &input, float dt, Feedback &feedback
         ctx_.store.want_installed(true);
     refresh_prefs();
     if (dirty_ || seen_catalog_ != state.catalog_serial || seen_tiers_ != state.tiers_serial ||
-        seen_installed_ != state.installed_serial || seen_pop_ != popularity_hub().serial())
+        seen_installed_ != state.installed_serial || seen_pop_ != popularity_hub().serial() ||
+        seen_editorial_ != editorial_hub().serial())
         rebuild();
     prefetch_art();
     prefetch_hero(dt, focused);
@@ -1582,6 +1810,13 @@ Intent StoreScreen::update(const InputFrame &input, float dt, Feedback &feedback
     {
         intent.toast = batch_toast_;
         batch_toast_.clear();
+    }
+
+    // The first-download folder question takes the whole input while it is open.
+    if (folder_ask_.is_open())
+    {
+        folder_ask_.update(ctx_, input, dt, feedback);
+        return intent;
     }
 
     // Circle stops "Download all parts" after the part in flight.
@@ -1742,15 +1977,18 @@ Intent StoreScreen::update(const InputFrame &input, float dt, Feedback &feedback
     for (int i = 0; i < count; ++i)
     {
         float &value = tile_focus_[static_cast<std::size_t>(i)];
-        const float target = focused && view_ == View::grid && !on_button_ && i == index_ ? 1.0f : 0.0f;
+        const float target = focused && view_ == View::grid && !on_button_ && !in_carousel_ && i == index_ ? 1.0f : 0.0f;
         value += (target - value) * (1.0f - std::exp(-16.0f * dt));
     }
     button_focus_.target = focused && view_ == View::grid && on_button_ && !had_panel ? 1.0f : 0.0f;
     button_focus_.update(dt, 16.0f);
     // Row-wise: the focused row sits second from the top once the list scrolls.
+    // With the carousel above row 0 the grid is pushed down by its height (carousel.hpp); focus on the carousel
+    // itself shows the top.
     const int row = index_ / kColumns;
-    scroll_.target = std::max(0.0f, static_cast<float>(row - 1) * kPitch);
+    scroll_.target = in_carousel_ ? 0.0f : grid_scroll_target(row, kPitch, carousel_extra());
     scroll_.update(dt, 11.0f);
+    update_carousel(dt, focused && !had_panel);
 
     const int rows = static_cast<int>(page_.rows.size());
     row_focus_.resize(static_cast<std::size_t>(rows), 0.0f);
@@ -1773,7 +2011,10 @@ Intent StoreScreen::update(const InputFrame &input, float dt, Feedback &feedback
             const HeroSource source = prefs_source_ != nullptr ? prefs_source_->hero_source : HeroSource::all;
             const std::string url = choose_hero(*pop_index_, page_.title_ids, source);
             if (!url.empty() && hero_urls().set(page_.art_key, url))
+            {
                 header_.hero_url = url;
+                header_.hero_cached = hero_is_cached(url);
+            }
             // The small stand-in is IGDB's: not used when only Prosperopatches art is wanted.
             const std::string low = source == HeroSource::all ? pop_index_->hero_low(page_.title_ids) : std::string();
             if (!low.empty() && hero_urls().set_low(page_.art_key, low))
@@ -1997,6 +2238,87 @@ void StoreScreen::draw_tile_cell(hui::gfx::DrawList &list, const GameTile &tile,
     }
 }
 
+// The curated carousel: a plate as wide as the grid, the game's 16:9 picture on its right (uniform scale, the
+// overflow cropped, fading into the plate at its left edge so no box edge shows), the title, Install and
+// Favourite at the left, the slide dots under them. Neutral chrome (DESIGN-colour.md): the only colour is the art.
+void StoreScreen::draw_carousel(hui::gfx::DrawList &list) const
+{
+    const ui::Type &type = ctx_.type;
+    const Snapshot &snapshot = ctx_.store.state();
+    const int count = static_cast<int>(carousel_games_.size());
+    const int slide = std::clamp(car_slide_, 0, count - 1);
+    const GameGroup &game = games_.games[static_cast<std::size_t>(carousel_games_[static_cast<std::size_t>(slide)])];
+    const CarouselArt &art = carousel_art_[static_cast<std::size_t>(slide)];
+    const float focus = std::clamp(car_focus_.value, 0.0f, 1.0f);
+    ui::Rect r{kGridLeft, kGridTop - scroll_.value, 5.0f * kTile + 4.0f * kGap, kCarouselHeight};
+    if (r.y + r.h < kGridTop - 24.0f)
+        return;
+    r = r.inset(-6.0f * focus); // lifts a little with the focus, as a tile does
+    const ui::Color plate = ui::color::night2;
+    list.rounded_rect(r, ui::kArtRadius, plate);
+    const float art_w = r.h * kCarouselArtAspect;
+    const ui::Rect box{r.x + r.w - art_w, r.y, art_w, r.h};
+    const auto fade_in = [](const Artwork &a)
+    { return std::clamp(static_cast<float>((now_seconds() - a.ready_at) / 0.4), 0.0f, 1.0f); };
+
+    list.push_opacity(0.2f + 0.8f * std::clamp(car_in_.value, 0.0f, 1.0f));
+    float picture = 0.0f;
+    if (const Artwork *pic = carousel_slide_art(art, true))
+    {
+        const HeroPlacement at = place_hero(pic->width, pic->height, box);
+        if (at.usable)
+        {
+            picture = fade_in(*pic);
+            list.image(pic->texture, at.dest, at.uv, ui::Color::rgb(0xffffff, picture), ui::kArtRadius);
+        }
+    }
+    if (picture < 1.0f)
+    {
+        // No picture (yet): the cover, scaled up as a blurred wash that fills the box, as on the game page.
+        if (const Artwork *cover = ctx_.art.get(art.key, ArtKind::cover))
+        {
+            const float a = (1.0f - picture) * fade_in(*cover);
+            if (cover->ambient != 0)
+                ui::image_cover(list, cover->ambient, cover->width, cover->height, box,
+                                ui::Color::rgb(0xffffff, 0.95f * a), ui::kArtRadius);
+            ui::image_cover(list, cover->texture, cover->width, cover->height, box,
+                            ui::Color::rgb(0xffffff, 0.30f * a), ui::kArtRadius, 0.5f, 0.3f);
+        }
+    }
+    // The picture melts into the plate where the words are: the veil under the text.
+    list.gradient_rect_h({box.x, box.y, 340.0f, box.h}, 0.0f, plate, ui::Color::rgb(0x151515, 0.0f));
+
+    const float x0 = r.x + 56.0f;
+    const float text_w = box.x - x0 - 4.0f;
+    const float size = ui::fit_size(type.light, game.title, 60.0f, 36.0f, text_w);
+    ui::text_fit(list, type.light, game.title, x0, r.y + 168.0f, size, text_w, ui::color::text);
+    const float by = r.y + 212.0f;
+    constexpr float kBtnH = 60.0f;
+    const std::string install = tr("Install");
+    const bool fav = game_favourite(state_, game, snapshot.packages);
+    const std::string fav_label = fav ? std::string(tr("Favourited")) : std::string(tr("Favourite"));
+    const float install_w = std::max(230.0f, ui::button_width(type, install, 24.0f) + 40.0f);
+    const float fav_w = std::max(230.0f, ui::button_width(type, fav_label, 24.0f, ui::ButtonKind::secondary) + 40.0f);
+    ui::button(list, type, {x0, by, install_w, kBtnH}, install, ui::ButtonKind::primary,
+               focus * car_btn_[kCarouselInstall].value, true, 24.0f);
+    ui::button(list, type, {x0 + install_w + 18.0f, by, fav_w, kBtnH}, fav_label, ui::ButtonKind::secondary,
+               focus * car_btn_[kCarouselFavourite].value, true, 24.0f);
+    list.pop_opacity();
+
+    if (count > 1)
+    {
+        for (int i = 0; i < count; ++i)
+        {
+            const float cx = x0 + 6.0f + static_cast<float>(i) * 24.0f;
+            const float cy = r.y + r.h - 52.0f;
+            if (i == slide)
+                list.circle(cx, cy, 6.0f, ui::color::text);
+            else
+                list.circle(cx, cy, 4.5f, ui::Color::rgb(0xffffff, 0.35f));
+        }
+    }
+}
+
 void StoreScreen::draw_grid(Frame &frame, bool focused) const
 {
     hui::gfx::DrawList &list = frame.scene;
@@ -2043,7 +2365,7 @@ void StoreScreen::draw_grid(Frame &frame, bool focused) const
     }
     {
         const WingsLocalPrefs &prefs = prefs_source_ != nullptr ? *prefs_source_ : own_prefs_;
-        const bool on_tile = focused && !on_button_ && index_ >= 0 &&
+        const bool on_tile = focused && !on_button_ && !in_carousel_ && index_ >= 0 &&
                              static_cast<std::size_t>(index_) < tile_focus_.size();
         draw_header(list, tier_legend_alpha(prefs.tile_details,
                                             on_tile ? tile_focus_[static_cast<std::size_t>(index_)] : 0.0f));
@@ -2060,6 +2382,8 @@ void StoreScreen::draw_grid(Frame &frame, bool focused) const
         return;
     }
     list.push_clip({0.0f, kGridTop - 24.0f, 1920.0f, kGridBottom - kGridTop + 24.0f});
+    if (carousel_on_ && !carousel_games_.empty())
+        draw_carousel(list);
     for (std::size_t i = 0; i < tiles_.size(); ++i)
     {
         const ui::Rect r = tile_rect(static_cast<int>(i));
@@ -2533,6 +2857,25 @@ void StoreScreen::draw_detail(Frame &frame, bool focused) const
     if (!page_.loaded)
         return;
 
+    // A known-problem note (editorial.hpp): under the title block, on the open header only, never focusable.
+    // Amber mark and word, the sentence itself in the quiet text colour (DESIGN-colour.md: semantic colours
+    // stay small and come with a word). Read from the hub every frame, so a refreshed file shows at once.
+    if (const std::string note = editorial_hub().note(page_.title_ids); !note.empty() && header_.slide.value < 0.99f)
+    {
+        const float fade = 1.0f - header_.slide.value;
+        const float nx = head_layout.text_x;
+        const float base = head_layout.meta_baseline + 54.0f;
+        const ui::Color amber = theme::semantic::caution;
+        list.push_opacity(fade);
+        list.rounded_rect({nx, base - 22.0f, 28.0f, 28.0f}, 14.0f, amber);
+        const float bang = type.semibold.measure("!", 21.0f);
+        ui::text(list, type.semibold, "!", nx + 14.0f - bang * 0.5f, base - 1.0f, 21.0f, ui::Color::rgb(0x181818));
+        ui::text(list, type.semibold, tr("Known problem"), nx + 40.0f, base - 1.0f, 21.0f, amber);
+        ui::paragraph(list, type.regular, note, nx + 40.0f, base + 32.0f, 21.0f, head_layout.text_w - 40.0f, 30.0f,
+                      ui::color::text2, 2);
+        list.pop_opacity();
+    }
+
     // The list's top and left move from under the header to the compact page's.
     const float slide = header_.slide.value;
     const float list_top = head_layout.list_top + (kPageListTop - head_layout.list_top) * slide;
@@ -2651,6 +2994,7 @@ void StoreScreen::draw(Frame &frame, bool focused) const
     prompt_.draw(ctx, frame);
     confirm_.draw(ctx, frame);
     list_.draw(ctx, frame);
+    folder_ask_.draw(ctx, frame);
 }
 
 std::vector<hui::ui::Hint> StoreScreen::hints() const
@@ -2662,7 +3006,7 @@ std::vector<hui::ui::Hint> StoreScreen::hints() const
     if (panel_ != Panel::none)
         return {{hui::ui::Button::cross, tr("Choose")}, {hui::ui::Button::circle, tr("Back")}};
     // A dialog over the page or the grid: only its own buttons work.
-    if (confirm_.is_open() || list_.is_open())
+    if (confirm_.is_open() || list_.is_open() || folder_ask_.is_open())
         return {{hui::ui::Button::cross, tr("Choose")}, {hui::ui::Button::circle, tr("Back")}};
     if (view_ == View::detail)
     {
@@ -2692,6 +3036,15 @@ std::vector<hui::ui::Hint> StoreScreen::hints() const
         items.push_back({hui::ui::Button::circle, tr("Back")});
         items.push_back({hui::ui::Button::l1, tr("Switch Tabs"), hui::ui::Button::r1});
         return items;
+    }
+    // On the carousel: Cross is the focused button, Square toggles the slide's game as a favourite.
+    if (in_carousel_ && carousel_on_)
+    {
+        return {{hui::ui::Button::cross, car_button_ == kCarouselFavourite ? tr("Favourite") : tr("Install")},
+                {hui::ui::Button::square, tr("Favourite")},
+                {hui::ui::Button::triangle, tr("Search")},
+                {hui::ui::Button::options, tr("Utilities")},
+                {hui::ui::Button::l1, tr("Switch Tabs"), hui::ui::Button::r1}};
     }
     // Nothing matches: Cross resets the search and the filters (as the screen says).
     const bool none = tiles_.empty() && ctx_.store.state().have_catalog && !ctx_.store.state().packages.empty();

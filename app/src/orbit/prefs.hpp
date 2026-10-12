@@ -47,6 +47,11 @@ struct WingsLocalPrefs
     // covers, and every art source.
     IconSource icon_source = IconSource::catalogue;
     HeroSource hero_source = HeroSource::all;
+    // Editorial data (editorial.hpp): the short notes on game pages and the curated carousel on the store. On by
+    // default; folder_confirmed is set once the player has confirmed the games folder (files from before have no keys).
+    bool notes_enabled = true;
+    bool carousel_enabled = true;
+    bool folder_confirmed = false;
 
     bool operator==(const WingsLocalPrefs &other) const;
 };

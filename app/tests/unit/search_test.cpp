@@ -463,6 +463,7 @@ struct SearchHarness
         if (!path.empty())
             context.catalogue_paths = {path};
         app = std::make_unique<App>(context);
+        context.folder_confirmed = [] { return true; };
         store.poll_once();
         store.load_catalog_once();
         frame();

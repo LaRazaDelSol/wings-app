@@ -8,6 +8,7 @@
 #include "fake_backend.hpp"
 #include "orbit/catalogue_view.hpp"
 #include "orbit/core_transport.hpp"
+#include "orbit/editorial.hpp"
 #include "orbit/pegasus_backend.hpp"
 #include "orbit/screens.hpp"
 #include "orbit/store.hpp"
@@ -429,6 +430,7 @@ struct GridHarness
         if (!catalogue_path.empty())
             context.catalogue_paths = {catalogue_path};
         app = std::make_unique<App>(context);
+        context.folder_confirmed = [] { return true; };
         store.poll_once();
         store.load_catalog_once();
         frame();
@@ -487,6 +489,82 @@ TEST(StoreGrid, DefaultIsAToZWithInstalledStatusFromTheGameList)
     EXPECT_EQ(grid.tile_installed(at("pkg1")), 0);
 }
 
+// Puts the featured-carousel data in the shared editorial hub for one test and clears it afterwards.
+struct CarouselData
+{
+    explicit CarouselData(bool on)
+    {
+        auto data = std::make_shared<EditorialData>();
+        std::string why;
+        ok = EditorialData::parse_curated(
+            "{\"schemaVersion\":1,\"items\":[\"PPSA90002\",\"PPSA99999\",\"PPSA90001\"]}", data.get(), &why);
+        editorial_hub().set_data(data);
+        editorial_hub().set_enabled(false, on);
+    }
+    ~CarouselData()
+    {
+        editorial_hub().set_enabled(false, false);
+        editorial_hub().set_data(nullptr);
+    }
+    bool ok = false;
+};
+
+TEST(StoreGrid, CarouselIsHiddenWhenTheSwitchIsOff)
+{
+    CarouselData data(false);
+    ASSERT_TRUE(data.ok);
+    GridHarness h;
+    EXPECT_FALSE(h.grid().carousel_visible());
+    EXPECT_EQ(h.grid().shown_count(), 25);
+    h.move(Direction::up); // from the first row the focus leaves for the top bar, as before
+    EXPECT_FALSE(h.grid().on_carousel());
+}
+
+TEST(StoreGrid, CarouselShowsTheFeaturedGamesTheCatalogueHas)
+{
+    CarouselData data(true);
+    ASSERT_TRUE(data.ok);
+    GridHarness h;
+    StoreScreen &grid = h.grid();
+    ASSERT_TRUE(grid.carousel_visible());
+    EXPECT_EQ(grid.carousel_count(), 2); // PPSA99999 is not in this catalogue
+    EXPECT_EQ(grid.shown_count(), 25);   // the grid itself is unchanged
+    EXPECT_FALSE(grid.on_carousel());
+    // Up from the first row enters the carousel, on Install.
+    h.move(Direction::up);
+    ASSERT_TRUE(grid.on_carousel());
+    EXPECT_EQ(grid.carousel_button(), kCarouselInstall);
+    EXPECT_EQ(grid.carousel_slide(), 0);
+    h.move(Direction::right);
+    EXPECT_EQ(grid.carousel_button(), kCarouselFavourite);
+    h.move(Direction::right); // the edge button changes the slide
+    EXPECT_EQ(grid.carousel_slide(), 1);
+    EXPECT_EQ(grid.carousel_button(), kCarouselFavourite);
+    h.move(Direction::left);
+    EXPECT_EQ(grid.carousel_button(), kCarouselInstall);
+    EXPECT_EQ(grid.carousel_slide(), 1);
+    // Down returns to the grid; Up and Cross on Install open the slide's game page.
+    h.move(Direction::down);
+    EXPECT_FALSE(grid.on_carousel());
+    h.move(Direction::up);
+    ASSERT_TRUE(grid.on_carousel());
+    h.press(hui::Action::confirm);
+    EXPECT_TRUE(grid.detail_open());
+}
+
+TEST(StoreGrid, CarouselGoesAwayWithASearch)
+{
+    CarouselData data(true);
+    ASSERT_TRUE(data.ok);
+    GridHarness h;
+    StoreScreen &grid = h.grid();
+    ASSERT_TRUE(grid.carousel_visible());
+    grid.set_query("ember");
+    h.settle(3);
+    EXPECT_FALSE(grid.carousel_visible());
+    EXPECT_FALSE(grid.on_carousel());
+}
+
 TEST(StoreGrid, NothingIsClaimedWhileTheGameListHasNotLoaded)
 {
     host::FakeBackend backend;
@@ -496,6 +574,7 @@ TEST(StoreGrid, NothingIsClaimedWhileTheGameListHasNotLoaded)
     ArtCache art(backend, sink);
     Context context(fonts.type, fonts.fonts, store, art);
     App app(context);
+    context.folder_confirmed = [] { return true; };
     store.poll_once(); // no screen has asked for /appdb yet
     store.load_catalog_once();
     hui::InputFrame idle;

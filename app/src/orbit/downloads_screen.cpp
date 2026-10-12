@@ -32,7 +32,7 @@ void DownloadsScreen::focus()
 
 bool DownloadsScreen::modal() const
 {
-    return prompt_.is_open() || confirm_.is_open() || list_.is_open() || probing_;
+    return prompt_.is_open() || confirm_.is_open() || list_.is_open() || folder_ask_.is_open() || probing_;
 }
 
 void DownloadsScreen::rebuild()
@@ -192,6 +192,13 @@ Intent DownloadsScreen::update(const InputFrame &input, float dt, Feedback &feed
     const int count = static_cast<int>(order_.size());
     index_ = std::clamp(index_, 0, std::max(0, count - 1));
 
+    // The first-download folder question takes the whole input while it is open.
+    if (folder_ask_.is_open())
+    {
+        folder_ask_.update(ctx_, input, dt, feedback);
+        return intent;
+    }
+
     const bool had_prompt = prompt_.is_open();
     const bool had_confirm = confirm_.is_open();
     const bool had_list = list_.is_open();
@@ -318,10 +325,16 @@ Intent DownloadsScreen::update(const InputFrame &input, float dt, Feedback &feed
         }
         else if (pending_ == Pending::direct_link)
         {
-            ctx_.store.queue_direct(state.probe, "");
-            probing_ = true; // wait for the queue reply
-            seen_probe_action_ = ctx_.store.probe_action().serial;
-            seen_probe_ = state.probe_serial;
+            const auto queue = [this]
+            {
+                const Snapshot &now = ctx_.store.state();
+                ctx_.store.queue_direct(now.probe, "");
+                probing_ = true; // wait for the queue reply
+                seen_probe_action_ = ctx_.store.probe_action().serial;
+                seen_probe_ = now.probe_serial;
+            };
+            if (!folder_ask_.guard(ctx_, queue))
+                queue();
         }
     }
     if (confirmed != ConfirmDialog::Result::none)
@@ -650,6 +663,7 @@ void DownloadsScreen::draw(Frame &frame, bool focused) const
     prompt_.draw(ctx_, frame);
     confirm_.draw(ctx_, frame);
     list_.draw(ctx_, frame);
+    folder_ask_.draw(ctx_, frame);
 }
 
 std::vector<hui::ui::Hint> DownloadsScreen::hints() const

@@ -69,6 +69,8 @@ class PopularityIndex
 
 // "Only https://": the source URL is refused otherwise (also credentials, spaces, > 300 bytes).
 bool valid_popularity_url(std::string_view url);
+// Writes `data` to every path (creating the folder); `written` counts the files that worked. Shared with editorial.cpp.
+void write_everywhere(const std::vector<std::string> &paths, const std::string &data, int *written);
 // 4300 -> "4.3k", 1200000 -> "1.2M", 950 -> "950".
 std::string short_count(long n);
 // "Popularity 87 · Rating 92 (4.3k)"; "" for a null record.

@@ -312,11 +312,33 @@ void GameHeaderState::reset()
     hero_url.clear();
     hero_low_url.clear();
     hero_resolved = false;
+    hero_cached = false;
+    open_s = 0.0f;
+    hero_logged = false;
     more.clear();
+}
+
+bool hold_cover_wash(bool has_hero_address, bool cached, float since_open_s, bool hero_refused)
+{
+    return has_hero_address && cached && !hero_refused && since_open_s < kHeroWashHoldS;
+}
+
+HeroHooks &hero_hooks()
+{
+    static HeroHooks hooks;
+    return hooks;
+}
+
+bool hero_is_cached(const std::string &url)
+{
+    const HeroHooks &h = hero_hooks();
+    return !url.empty() && h.cached && h.cached(url);
 }
 
 void GameHeaderState::update(float dt, bool focused)
 {
+    if (open_s < 3600.0f)
+        open_s += dt;
     slide.target = on_header ? 0.0f : 1.0f;
     slide.update(dt, 10.0f);
     for (int i = 0; i < kHeaderButtons; ++i)
@@ -420,6 +442,7 @@ void draw_game_header(Context &ctx, hui::gfx::DrawList &list, const HeaderView &
     const ui::Rect band{0.0f, 0.0f, kPageW, hero::kScreenH};
     list.gradient_rect(band, 0.0f, indigo, indigo_deep);
     float hero_alpha = 0.0f;
+    bool hero_refused = false;
     if (!view.hero_key.empty())
     {
         // The full picture is asked for first and the small one after it: the worker serves the newest
@@ -429,6 +452,7 @@ void draw_game_header(Context &ctx, hui::gfx::DrawList &list, const HeaderView &
         const HeroPlacement full_at =
             full != nullptr ? place_hero(full->width, full->height, band) : HeroPlacement{};
         const float full_alpha = full_at.usable ? fade_in(*full) : 0.0f;
+        hero_refused = full != nullptr && !full_at.usable;
         // The small one: until the full one is fully faded in (it stays when the full one is refused).
         if (view.hero_low && full_alpha < 1.0f)
         {
@@ -448,7 +472,37 @@ void draw_game_header(Context &ctx, hui::gfx::DrawList &list, const HeaderView &
             list.image(full->texture, full_at.dest, full_at.uv, ui::Color::rgb(0xffffff, full_alpha), 0.0f);
         }
     }
-    if (hero_alpha < 1.0f && !view.page->art_key.empty())
+    // Once per page open: how long until the first frame with the picture on screen (or why none).
+    if (!state.hero_logged)
+    {
+        const HeroHooks &hooks = hero_hooks();
+        char msg[96];
+        bool say = false;
+        if (hero_alpha > 0.0f)
+        {
+            std::snprintf(msg, sizeof msg, "[WINGS-ART] hero first frame %d ms after page open%s",
+                          static_cast<int>(state.open_s * 1000.0f), state.hero_cached ? " (cached)" : "");
+            say = true;
+        }
+        else if (hero_refused || (state.hero_resolved && view.hero_key.empty()))
+        {
+            std::snprintf(msg, sizeof msg, "[WINGS-ART] hero: no hero%s", hero_refused ? " (refused shape)" : "");
+            say = true;
+        }
+        else if (state.open_s > 8.0f)
+        {
+            std::snprintf(msg, sizeof msg, "[WINGS-ART] hero: none drawn after 8000 ms");
+            say = true;
+        }
+        if (say)
+        {
+            state.hero_logged = true;
+            if (hooks.log)
+                hooks.log(msg);
+        }
+    }
+    const bool hold_wash = hold_cover_wash(view.hero_full, state.hero_cached, state.open_s, hero_refused);
+    if (hero_alpha < 1.0f && !view.page->art_key.empty() && !hold_wash)
     {
         // No hero (or not yet): the cover, scaled up, as a blurred wash.
         if (const Artwork *cover = ctx.art.get(view.page->art_key, ArtKind::cover))

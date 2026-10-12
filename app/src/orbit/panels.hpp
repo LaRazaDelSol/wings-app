@@ -15,6 +15,7 @@
 #include "ui/components/input_prompt.hpp"
 #include "ui/feedback.hpp"
 
+#include <functional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -290,6 +291,28 @@ class FolderPicker
     ui::Ease in_;
     ui::Ease scroll_;
     std::vector<float> row_focus_;
+};
+
+// The first-download "Download folder" question (docs B-13), shared by the Store and Downloads tabs: each owns one.
+// guard() is called where a download would start; true means it was held back and the question is open. Keep or a
+// picked folder runs the held action; Back leaves nothing started (it is asked again next time).
+class FolderAsk
+{
+  public:
+    bool guard(Context &ctx, std::function<void()> resume);
+    bool is_open() const
+    {
+        return list_.is_open() || picker_.is_open() || notice_.is_open();
+    }
+    void update(Context &ctx, const hui::InputFrame &input, float dt, hui::ui::Feedback &feedback);
+    void draw(Context &ctx, Frame &frame) const;
+
+  private:
+    void answered(Context &ctx);
+    ListDialog list_;
+    FolderPicker picker_;
+    ConfirmDialog notice_;
+    bool opened_ = false; // the question opened since the last update (plays the cue)
 };
 
 // The dim veil behind every panel.

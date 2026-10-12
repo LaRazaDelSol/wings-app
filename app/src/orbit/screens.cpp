@@ -8,6 +8,7 @@
 #include "orbit/screens.hpp"
 
 #include "orbit/diagnostics.hpp"
+#include "orbit/editorial.hpp"
 #include "orbit/i18n.hpp"
 #include "orbit/model.hpp"
 #include "orbit/pegasus_manager.hpp"
@@ -272,6 +273,7 @@ SettingsScreen::SettingsScreen(Context &context) : ListScreen(context)
     {
         load_local_prefs(ctx_.wings_prefs_paths, &prefs_);
         popularity_hub().apply_prefs(prefs_.popularity_enabled, prefs_.popularity_url);
+        editorial_hub().apply_prefs(prefs_.notes_enabled, prefs_.carousel_enabled);
         wings_update().set_enabled(prefs_.update_check);
     }
 }
@@ -281,6 +283,7 @@ void SettingsScreen::store_local_prefs()
     if (!ctx_.wings_prefs_paths.empty())
         save_local_prefs(ctx_.wings_prefs_paths, prefs_);
     popularity_hub().apply_prefs(prefs_.popularity_enabled, prefs_.popularity_url);
+    editorial_hub().apply_prefs(prefs_.notes_enabled, prefs_.carousel_enabled);
     wings_update().set_enabled(prefs_.update_check);
 }
 
@@ -434,6 +437,12 @@ void SettingsScreen::build_wings(std::vector<Row> &out, std::vector<Act> *acts) 
         const WingsUpdateText words = wings_update_text(up);
         add("Wings update", words.detail, words.value, Act::wings_update, !up.attached);
     }
+    // Editorial: short notes about games and the store carousel (editorial.hpp), both on by default.
+    begin("Store extras", theme::accent_store_grid);
+    add("Known-problem notes", tr("Show a short warning on a game's page when the project site lists one"),
+        prefs_.notes_enabled ? std::string(tr("On")) : std::string(tr("Off")), Act::notes);
+    add("Featured carousel", tr("Show the project's featured games above the Store grid"),
+        prefs_.carousel_enabled ? std::string(tr("On")) : std::string(tr("Off")), Act::carousel);
     // Diagnostics and About: what Wings knows about itself and about Pegasus DL (read-only).
     begin("About", theme::accent_about);
     const bool known = state.online() && state.have_info;
@@ -520,8 +529,14 @@ void SettingsScreen::build_pegasus(std::vector<Row> &out, std::vector<Act> *acts
     }
     const SettingsView &s = state.settings;
     begin("Downloads", theme::accent_downloads);
-    add("Download folder", s.download_root.empty() ? std::string("-") : s.download_root,
-        tr("Change"), Act::folder);
+    {
+        // Why no default folder could be set is a dim sentence after the path (empty: nothing to say).
+        const std::string &why = ctx_.store.default_folder_status();
+        std::string detail = s.download_root.empty() ? std::string("-") : s.download_root;
+        if (!why.empty())
+            detail = s.download_root.empty() ? why : detail + "  Â·  " + why;
+        add("Download folder", detail, tr("Change"), Act::folder);
+    }
     add("Download connections",
         tr("Parallel connections Pegasus DL opens for each download (1 to 64)"),
         std::to_string(s.connections), Act::connections);
@@ -806,6 +821,18 @@ void SettingsScreen::on_confirm(int row, Feedback &feedback, Intent &intent)
         store_local_prefs();
         intent.toast = prefs_.update_check ? tr("Wings will check for updates when it starts")
                                            : tr("Wings will not check for updates");
+        break;
+    case Act::notes:
+        prefs_.notes_enabled = !prefs_.notes_enabled;
+        store_local_prefs();
+        intent.toast = prefs_.notes_enabled ? tr("Game pages show known-problem notes")
+                                            : tr("Game pages will not show notes");
+        break;
+    case Act::carousel:
+        prefs_.carousel_enabled = !prefs_.carousel_enabled;
+        store_local_prefs();
+        intent.toast = prefs_.carousel_enabled ? tr("The Store shows the featured carousel")
+                                               : tr("The Store will not show the carousel");
         break;
     case Act::wings_update:
     {

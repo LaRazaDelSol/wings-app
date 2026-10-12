@@ -364,6 +364,7 @@ struct AppHarness
 
     explicit AppHarness(host::FakeMode mode = host::FakeMode::normal) : backend(mode)
     {
+        context.folder_confirmed = [] { return true; };
         context.app_version = "00.001.000";
         store.poll_once();
         store.load_catalog_once();
@@ -454,6 +455,7 @@ TEST(App, TheShellShowsBeforeTheCatalogueLoadsAndWhileOffline)
     ArtCache art(backend, sink);
     Context context(fonts.type, fonts.fonts, store, art);
     App app(context);
+    context.folder_confirmed = [] { return true; };
     Feedback feedback;
     // Nothing polled yet: the shell (tabs, status pill) is already drawn.
     app.update({}, 1.0f / 60.0f, feedback);

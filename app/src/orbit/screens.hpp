@@ -13,10 +13,12 @@
 #include "gfx/backdrop_spec.hpp"
 #include "gfx/draw_list.hpp"
 #include "orbit/art.hpp"
+#include "orbit/carousel.hpp"
 #include "orbit/catalogue_view.hpp"
 #include "orbit/cover_art.hpp"
 #include "orbit/destination_browser.hpp"
 #include "orbit/download_all.hpp"
+#include "orbit/download_folder.hpp"
 #include "orbit/files_logic.hpp"
 #include "orbit/game_header.hpp"
 #include "orbit/game_view.hpp"
@@ -104,6 +106,11 @@ struct Context
     std::vector<std::string> wings_prefs_paths;
     // Settings > Wings > Store grid: back to A to Z with no filters (the App sets it).
     std::function<void()> reset_store_grid;
+    // The first-download "Download folder" question (docs B-13), shared by the Store and Downloads tabs. The App sets
+    // the two functions from Settings' prefs; empty (preview, tests): downloads are never held back.
+    FirstDownloadGate folder_gate;
+    std::function<bool()> folder_confirmed;
+    std::function<void()> confirm_folder; // sets and saves WingsLocalPrefs::folder_confirmed
     float clock = 0.0f; // seconds since the app opened
     // The first-run "load Pegasus DL" block is drawn under the waiting card (the App sets it every
     // frame): the card then drops its "Need it? Settings > ..." line and the raw link error.
@@ -457,6 +464,27 @@ class StoreScreen final : public Screen
     {
         return panel_ != Panel::none;
     }
+    // The carousel (tests, previews): shown, how many slides, the focus on it, its slide and button.
+    bool carousel_visible() const
+    {
+        return carousel_on_;
+    }
+    int carousel_count() const
+    {
+        return static_cast<int>(carousel_games_.size());
+    }
+    bool on_carousel() const
+    {
+        return in_carousel_;
+    }
+    int carousel_slide() const
+    {
+        return car_slide_;
+    }
+    int carousel_button() const
+    {
+        return car_button_;
+    }
     // -1 / 0 / 1: unknown / not installed / installed, for the tile at position.
     int tile_installed(int position) const;
     bool tile_favourite(int position) const;
@@ -492,7 +520,24 @@ class StoreScreen final : public Screen
     };
     static constexpr int kColumns = 5;
 
+    // The carousel's picture addresses for one game.
+    struct CarouselArt
+    {
+        std::string key;      // art key of the game's cover ("pkg:<id>"), shared with the tile and the page
+        std::string low_url;  // the small 16:9 picture ("" none)
+        std::string hero_url; // the full 16:9 picture ("" none); drawn only when there is no small one
+    };
     ui::Rect tile_rect(int index) const;
+    // Extra height above grid row 0 while the carousel is shown (0 otherwise: the grid is exactly as it was).
+    float carousel_extra() const
+    {
+        return carousel_on_ ? kCarouselExtra : 0.0f;
+    }
+    void update_carousel(float dt, bool focused);
+    void update_carousel_input(const InputFrame &input, Feedback &feedback, Intent &intent);
+    bool toggle_carousel_favourite();
+    void draw_carousel(hui::gfx::DrawList &list) const;
+    const Artwork *carousel_slide_art(const CarouselArt &art, bool allow_full) const;
     void refresh_prefs();
     void rebuild();
     void read_facts(std::uint64_t serial, std::size_t from);
@@ -566,6 +611,20 @@ class StoreScreen final : public Screen
     HeroPrefetchGate hero_gate_; // when the focused tile's 16:9 picture is fetched ahead
     std::uint64_t prefetch_serial_ = ~0ull;
     bool on_button_ = false; // the focus is on the round sort/filter button
+    // The curated carousel above the grid (carousel.hpp). carousel_games_ are indexes into games_.
+    bool carousel_on_ = false;  // shown (default grid view, switch on, at least one game found)
+    bool in_carousel_ = false;  // the focus is on the carousel's buttons
+    int car_slide_ = 0;         // index into carousel_games_
+    int car_button_ = 0;        // kCarouselInstall / kCarouselFavourite
+    std::vector<int> carousel_games_;
+    std::vector<CarouselArt> carousel_art_; // per carousel game
+    CarouselClock car_clock_;
+    ui::Ease car_focus_;        // the carousel has the focus
+    ui::Ease car_btn_[2];       // per button
+    ui::Ease car_in_;           // a new slide fades in
+    float car_on_slide_s_ = 0.0f;              // seconds the current slide has been up
+    std::vector<std::string> car_prefetched_;  // picture addresses already sent to the disk cache
+    std::uint64_t seen_editorial_ = ~0ull;
     int index_ = 0;
     ui::Ease scroll_;
     ui::Ease button_focus_;
@@ -592,6 +651,7 @@ class StoreScreen final : public Screen
     bool waiting_detail_ = false;
     GameHeaderState header_; // the page header: focus, slide, hero (game_header.hpp)
     // Panels and the flow they belong to.
+    FolderAsk folder_ask_; // the first-download folder question (start_single, start_batch)
     TextPrompt prompt_;
     ConfirmDialog confirm_;
     ListDialog list_;
@@ -687,6 +747,7 @@ class DownloadsScreen final : public Screen
     TextPrompt prompt_;
     ConfirmDialog confirm_;
     ListDialog list_;
+    FolderAsk folder_ask_; // the first-download folder question (queue a direct link)
     Pending pending_ = Pending::none;
     ListFor list_for_ = ListFor::none;
     std::string menu_job_;
@@ -1236,6 +1297,8 @@ class SettingsScreen final : public ListScreen
         wings_update,
         icon_source,
         hero_source,
+        notes,
+        carousel,
     };
     enum class Pending : std::uint8_t
     {

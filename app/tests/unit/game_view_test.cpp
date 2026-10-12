@@ -51,6 +51,7 @@ struct Rig
         if (!catalogue_path.empty())
             context.catalogue_paths = {catalogue_path};
         app = std::make_unique<App>(context);
+        context.folder_confirmed = [] { return true; }; // these tests are not about the first-download question
         store.poll_once();
         store.load_catalog_once();
         frame();

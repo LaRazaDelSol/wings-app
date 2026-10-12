@@ -25,6 +25,7 @@ long clamp_count(const json::Value &v)
     const double n = v.as_number(-1.0);
     return n < 0.0 || n > 1e9 ? -1 : static_cast<long>(n);
 }
+} // namespace
 
 void write_everywhere(const std::vector<std::string> &paths, const std::string &data, int *written)
 {
@@ -37,7 +38,6 @@ void write_everywhere(const std::vector<std::string> &paths, const std::string &
             ++*written;
     }
 }
-} // namespace
 
 // ---- the index ----
 

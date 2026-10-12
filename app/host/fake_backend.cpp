@@ -1371,6 +1371,7 @@ Result<SettingsView> FakeBackend::settings_update(const SettingsPatch &patch)
             return result;
         }
         settings_.download_root = patch.root;
+        last_root_written_ = patch.root;
     }
     if (patch.has_connections)
         settings_.connections = patch.connections;
@@ -1502,6 +1503,13 @@ Result<bool> FakeBackend::mkdir(std::string_view full_path)
         return refuse<bool>();
     Result<bool> result;
     const std::string path(full_path);
+    mkdir_calls_.push_back(path);
+    if (mkdir_fails_)
+    {
+        result.status = 403;
+        result.error = "That location is read-only.";
+        return result;
+    }
     bool found = false;
     const FolderListing parent = list_locked(parent_of(path), true, &found);
     if (!found || !parent.writable)
@@ -2124,6 +2132,30 @@ int FakeBackend::settings_reads() const
 {
     Lock lock(mutex_);
     return settings_reads_;
+}
+
+void FakeBackend::set_download_root(const std::string &root)
+{
+    Lock lock(mutex_);
+    settings_.download_root = root;
+}
+
+std::vector<std::string> FakeBackend::mkdir_calls() const
+{
+    Lock lock(mutex_);
+    return mkdir_calls_;
+}
+
+void FakeBackend::set_mkdir_fails(bool fails)
+{
+    Lock lock(mutex_);
+    mkdir_fails_ = fails;
+}
+
+std::string FakeBackend::last_root_written() const
+{
+    Lock lock(mutex_);
+    return last_root_written_;
 }
 
 int FakeBackend::settings_writes() const

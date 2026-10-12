@@ -181,6 +181,8 @@ class ArtService
     // Queue background fetches for URLs that are not cached yet. Returns how many were queued.
     std::size_t prefetch(const std::vector<std::string> &urls, Kind kind = Kind::cover,
                          Lane lane = Lane::prefetch);
+    // True when the bytes for this URL are already in the disk cache. Cheap, any thread.
+    bool is_cached(const std::string &url);
     // Drops queued (not running) prefetch and idle-fill jobs, e.g. when the grid changes.
     void cancel_background();
     // Test/utility: request() until it is not pending, up to timeout_ms.

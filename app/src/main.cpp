@@ -16,6 +16,8 @@
 #include "orbit/art.hpp"
 #include "orbit/cover_art.hpp"
 #include "orbit/pegasus_manager.hpp"
+#include "orbit/editorial.hpp"
+#include "orbit/game_header.hpp"
 #include "orbit/popularity.hpp"
 #include "orbit/steam_reviews.hpp"
 #include "orbit/wings_update.hpp"
@@ -438,6 +440,12 @@ int main()
     { popularity.apply(on, url); };
     orbit::popularity_hub().refresh_hook = [&popularity] { popularity.refresh(); };
     orbit::popularity_hub().set_downloads_paths({std::string(kWingsDir) + "/downloads.v1"});
+    // Editorial data (game notes, store carousel): same fetcher, same 24 h and build rule as the popularity data.
+    orbit::EditorialServiceConfig editorial_config;
+    editorial_config.cache_paths = {std::string(kWingsDir) + "/editorial.v1", "/data/wings/editorial.v1"};
+    editorial_config.app_tag = pop_config.app_tag;
+    orbit::EditorialService editorial(orbit::editorial_hub(), doc_fetcher, editorial_config);
+    orbit::editorial_hub().apply_hook = [&editorial](bool notes, bool carousel) { editorial.apply(notes, carousel); };
     // Pegasus DL on this console: the release list on demand (6 h cache), a download only on a confirm.
     ConsolePegasusDownloader pegasus_downloader(art_service);
     {
@@ -490,6 +498,7 @@ int main()
         orbit::load_local_prefs(wings_prefs_paths(), &local);
         orbit::wings_update().set_enabled(local.update_check);
         popularity.apply(local.popularity_enabled, local.popularity_url);
+        orbit::editorial_hub().apply_prefs(local.notes_enabled, local.carousel_enabled);
     }
 
     // Package id -> poster URL, refreshed from the Store's snapshot in the frame
@@ -523,6 +532,9 @@ int main()
         const std::size_t queued = art_service.prefetch({url}, wings::art::Kind::hero, wings::art::Lane::prefetch);
         hui::sys::log("[WINGS-ART] hero prefetch %s", queued > 0 ? "queued" : "skipped (cached or not allowed)");
     };
+    // The game page holds the blurred cover back when its 16:9 picture is already on disk (game_header.hpp).
+    orbit::hero_hooks().cached = [&art_service](const std::string &url) { return art_service.is_cached(url); };
+    orbit::hero_hooks().log = [](const std::string &line) { hui::sys::log("%s", line.c_str()); };
     context.mark = mark;
     context.loader_mark = loader_mark;
     context.app_version = app_content_version;
