@@ -79,6 +79,7 @@ This is the same setup Orbit Store asks for. Pegasus DL must be running on the c
 
 1. Download `PPSA99178.ffpkg` from the [latest release](https://github.com/LaRazaDelSol/wings-app/releases/latest).
 2. Check the file. On Windows, in PowerShell: `Get-FileHash .\PPSA99178.ffpkg -Algorithm SHA256`. The value must equal the SHA-256 shown on the release page (case does not matter). If it does not, download again.
+   VirusTotal scans: [PPSA99178.ffpkg](https://www.virustotal.com/gui/file/7597dc7c53f4174302af89aafa1d049745564c0b8f76433b6fade88e4a05105d) · [PPSA99178-Alternative.zip](https://www.virustotal.com/gui/file/f14f05763f85e9863a8d9b63c0b4ce0c48344cc68b7fa8e2e17026aec84b610e)
 3. Copy the file to `/data/homebrew/` on the console (FTP or your usual file transfer). Check that the size on the console equals the size on the release page.
 4. Wait about ten seconds. ShadowMountPlus registers it and a **Wings** tile appears in the Games row.
 5. Open **Wings**.
