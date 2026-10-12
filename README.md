@@ -1,127 +1,154 @@
-# wings-popularity
+<div align="center">
 
-Builds `popularity.v1.json`, a small static file of popularity and rating numbers keyed by PlayStation titleId
-(PPSA = PS5, CUSA = PS4), for the Wings homebrew browser. The app never calls the data providers; it only downloads
-this one file (opt-in, cached). Python 3 standard library only. Scripts are MIT licensed (see `LICENSE`).
+# Wings
 
-## Output
+### A native PS5 front end for Pegasus DL, made for the couch and a controller.
 
-```
-{"schemaVersion":1,"generatedAt":"...Z","sources":["steam","wikipedia"],
- "attribution":{"steam":"...","wikipedia":"..."},
- "titles":{"PPSA01234":{"score":72,"rating":88,"ratingCount":1234,"sources":["steam","wikipedia"],
-                        "confidence":0.93,"fetchedAt":"2026-10-11",
-                        "hero":"https://cdn.cloudflare.steamstatic.com/steam/apps/1145350/library_hero.jpg"}}}
-```
+One clean page per game. See what every link is before you press it. Manage your files. Let Pegasus do the downloading.
 
-`score` is 0-100 (sort key for "Most popular"), `rating` 0-100 and `ratingCount` are absent when no rating source
-matched, `confidence` is 0-1 (the app should hide records below 0.6). Keys are sorted, output is compact JSON and
-deterministic for a given input, cache and `--now`. About 150 bytes per record, so well under 200 KB for 1,318 titles.
-Blend weights and missing-source handling are documented at the top of `popularity/blend.py`.
+[Install](#install) &middot; [Quick start](#quick-start) &middot; [Features](#features) &middot; [Controls](#controls) &middot; [Guides](#guides) &middot; [Privacy](#privacy) &middot; [Screenshots](#screenshots) &middot; [Credits](CREDITS.md) &middot; [License](#license)
 
-### Optional `hero` field (game artwork URL)
+</div>
 
-`hero` is an optional, additive https URL of 16:9-ish artwork that the console may fetch lazily when a game page
-opens. `schemaVersion` stays 1 and older readers ignore it. Rules:
+| What Wings is | What Wings is not |
+|---|---|
+| A PS5 app (title ID `PPSA99178`) that is a front end for a **Pegasus DL you already run** on the same console, through its local API at `127.0.0.1:6970`. | Not Pegasus DL, not affiliated with its author, and not a replacement for it. Pegasus does the downloading, installing and extracting. |
+| A better way to browse what Pegasus already knows: games grouped one per tile, links explained, files managed with a controller. | Not a source of games. Wings ships **no catalogues, no sources and no download links**. You add your own sources in Pegasus. |
+| Free software, GPL-3.0-or-later, built on the TV app of Orbit Store. | Not Orbit Store. None of Orbit's backend (payload, loader, pairing, update feeds) is in Wings. |
 
-* Source order: Steam `https://cdn.cloudflare.steamstatic.com/steam/apps/<appid>/library_hero.jpg` for the matched
-  appid; else, only when the IGDB provider ran, the first IGDB artwork (then screenshot) as
-  `https://images.igdb.com/igdb/image/upload/t_1080p/<image_id>.jpg`.
-* Emitted only when that provider's match confidence is >= 0.85 (`matcher.ACCEPT`) and not ambiguous; otherwise
-  the field is absent. Only public ids go into the URL; nothing is downloaded, hashed or stored.
-* Size: about 84 bytes per Steam record and 70 per IGDB record, so a full 1,318-title index grows by at most
-  roughly 110 KB (about 230 bytes per record in total, still under `--max-bytes 400000`).
-* The builder does not check that the file exists (`library_hero.jpg` is missing for some apps, and the app should
-  hide the image on a 404 or fall back to `.../header.jpg` in the same folder). Optional manual check, never in CI:
+> Wings never bundles, starts, installs or redistributes Pegasus DL. Start it yourself first, as you normally do. If Pegasus DL is not running, the waiting screen offers three choices straight away (with a spinner for the first ten seconds): load it once, turn on Auto-Load, or load it yourself. Only when you choose, Wings downloads the author's official release from its own release page on github.com, checks its SHA-256 and sends it to the payload loader on this console (`127.0.0.1:9021`). It never sends while Pegasus answers and never writes into any payload manager's folder. See [Pegasus auto-load](docs/guides/pegasus-autoload.md). *(Not yet hardware-tested.)*
 
-  ```
-  set WINGS_CONTACT=you@example.com
-  python verify_hero.py out/popularity.v1.json --sample 25          # HEAD requests, 1 req/s, report only
-  python verify_hero.py out/popularity.v1.json --fix                # 404 -> header.jpg, else drop the field
-  ```
-* Terms caveat: IGDB images carry the same attribution requirement as IGDB data and the same
-  republishing question (confirm with partner@igdb.com). The Steam store art terms for linking or reusing
-  `steamstatic.com` assets are NOT verified here; the index only links, it does not copy, and the Wings app must
-  fetch the image itself. Treat this as unconfirmed until Valve's terms are checked, and drop `hero` (one line in
-  `popularity/blend.py`) if that is a problem.
+## Features
 
-## Run locally
+Each item below was checked against the source tree and the build notes. Items that exist in code but have **not been tried on a real console yet** are marked *(not yet hardware-tested)*; the full list is under [Not yet verified](#not-yet-verified-on-hardware).
 
-```
-set WINGS_CONTACT=you@example.com        (PowerShell: $env:WINGS_CONTACT="you@example.com")
-python extract_titles.py path\to\library.json catalogue-titles.json
-python build_index.py --catalogue catalogue-titles.json --out out/popularity.v1.json --report out/report.md
-python -m unittest discover -s tests     (pytest also works)
-```
+- **One game, one page.** The same game from several sources is merged into one tile. Its page groups what is available into Base, Update and DLC, then by release, with every mirror shown as a card.
+- **Know the link before you press it.** A card shows the host, region, the firmware it needs (and the lowest firmware a back-port runs on), format (exFAT, FPKG, PKG), version and how it will download. Where a link points at a known wrapper page, Wings takes the host from the link's name instead.
+- **A "Best" pick that explains itself.** A link that needs a newer firmware than yours is never Best while anything else exists. Then: native `.pkg`, debrid, automatic providers, browser capture; then firmware fit, region, format, fewer parts, known size, newest version, source order. The card says why, for example `Debrid · USA · 12.xx · exFAT · 1 file`. See [Link types and what Best means](docs/guides/link-types.md).
+- **Multi-part archives as one card**, with a warning when a numbered set has gaps, and a **Download all parts** action that asks first and can be stopped with Circle after the part in flight. *(not yet hardware-tested)*
+- **Filters that fit the data.** On a game page: firmware ("Runs on my firmware"), region, format, host, source, single file only, no browser needed. The Store grid has its own filters and a "Single file only" switch. The sort of mirrors inside a release can be Best, newest, fewest parts or host.
+- **Search like the PlayStation one.** Triangle opens a search box with an on-screen keyboard, results update as you type, recent searches are kept as chips. The touchpad slides over the keys and a click types. *(touchpad typing worked on the earlier hardware build)*
+- **A Files tab built for a controller.** One list from `/` with drive chips and a breadcrumb, multi-select, copy, move, rename, delete, extract, install `.pkg`, a "Where to?" destination browser, an operations list with a visible way to cancel. *(file operations not yet hardware-tested)*
+- **Archive passwords.** When an archive asks for a password Wings tries six well-known public passwords one at a time before it asks you. *(not yet hardware-tested; how Pegasus reports a wrong password is assumed)* See [Archive passwords](docs/guides/archive-passwords.md).
+- **Everything Pegasus does, in one place.** Downloads queue, Library (installed games and APR Emu), Sources, Logs, and Settings split into **Wings** (kept on the console by Wings) and **Pegasus DL** (changes Pegasus, labelled as such).
+- **Cover art.** Store posters are downloaded over HTTPS by Wings itself and cached on the console (up to 96 MiB). **On by default**; turn it off in Settings.
+- **Optional popularity.** Sort by most popular or highest rated, and show a score and rating on tiles, from a small public data file. **On by default**; turn it off in Settings. See [Popularity data and privacy](docs/guides/popularity-and-privacy.md).
+- **Tile details setting.** Store tiles show their link tier and regions Always, On focus (default) or Never. *(not yet hardware-tested)*
 
-* `--catalogue` accepts `library.json` directly (path argument; it is never copied into this repo),
-  `catalogue-titles.json` or any `titles.json` of `[{"titleId","title"}]` (also `{"titleId": "title"}`); see
-  `docs/CUSTOM-CATALOGUE.md` for running it on your own catalogue. `--limit 20` is handy for a smoke test.
-* `WINGS_CONTACT` is required for network use. It goes into the User-Agent
-  (`Wings-popularity/0.1 (contact: ...)`), as Wikimedia requires.
-* Politeness: at most 3 concurrent workers, Wikimedia 4 req/s, Steam 1 req/s per host, IGDB 4 req/s, retries honour
-  `Retry-After`. Responses are cached in `.cache/http` (6 days) so reruns are cheap.
-* `out/report.md` lists coverage per source, low-confidence matches and unmatched titles.
+## Install
 
-### Catalogue input for CI
+**You need** a PS5 that can run homebrew, with:
 
-The catalogue (`library.json`) is third-party data and is never committed here, and neither is the title list.
-CI gets the list of `{"titleId","title"}` pairs from the repository secret `CATALOGUE_TITLES_GZ` (gzip + base64,
-masked in logs, written to a temporary file at run time). To create or refresh it:
+- **kstuff**, so a fake-signed app starts, and
+- **ShadowMountPlus**, so the package mounts and its tile appears.
 
-```
-python extract_titles.py path/to/library.json catalogue-titles.json   # git-ignored
-python pack_titles.py catalogue-titles.json                           # prints the secret value
-```
+This is the same setup Orbit Store asks for. Pegasus DL must be running on the console when you open Wings.
 
-Paste the printed line into Settings > Secrets and variables > Actions > New repository secret. Titles are cleaned of
-`[exFAT]`, versions and `@packager` tags, and non-game ids are dropped. The published `popularity.v1.json` is keyed by
-title ID only (public PlayStation identifiers): no names, no links.
+1. Download `PPSA99178.ffpkg` from the [latest release](../../releases/latest).
+2. Check the file. On Windows, in PowerShell: `Get-FileHash .\PPSA99178.ffpkg -Algorithm SHA256`. The value must equal the SHA-256 shown on the release page (case does not matter). If it does not, download again.
+3. Copy the file to `/data/homebrew/` on the console (FTP or your usual file transfer). Check that the size on the console equals the size on the release page.
+4. Wait about ten seconds. ShadowMountPlus registers it and a **Wings** tile appears in the Games row.
+5. Open **Wings**.
 
-### Matching and fixes
+To replace an older build under the same title ID, replace the file, remove the staged copies ShadowMountPlus made, then restart the jailbreak chain so the new package is mounted. To remove Wings, delete the `.ffpkg`; see section 10 of [FIRST-CONSOLE-TEST.md](docs/FIRST-CONSOLE-TEST.md).
 
-Titles are normalised (accents, trademark symbols, roman numerals, `&`, leading "the", format and edition words), then
-candidates are ranked by token Jaccard plus Jaro-Winkler, with a platform filter (Steam: Windows build; IGDB: PS5/PS4),
-DLC/bundle/soundtrack rejection and optional year disambiguation. If two different candidates score within 0.04 the
-result is flagged ambiguous with confidence capped at 0.5 instead of guessing. Below 0.6 there is no match.
-Fix mistakes in `overrides.json`:
+Wings writes only to its own folders: `/download0/wings/` (cover cache, settings, diagnostics, inside the title's storage) and `/data/wings/` (diagnostics and a copy of the settings, so you can read them in the file manager).
 
-```
-{"PPSA01234": {"wikipedia": "Hades II", "steam": 1145350, "igdb": 12345},
- "PPSA09999": "ignore"}
-```
+## Quick start
 
-A forced id gets confidence 1.0. `"ignore"` skips every provider for that title.
+1. Start Pegasus DL on the console and wait until its web UI answers.
+2. Open Wings. A pill at the top right says "Connecting", then "Pegasus DL" with its version. If it says **Waiting for Pegasus DL**, Wings keeps trying; start Pegasus.
+3. **Store**: tiles for your catalogue, one per game. Triangle searches, Options opens utilities, and the sort and filter button sits in the grid header.
+4. Cross on a tile opens its page. The **Best** card is on top; Cross downloads it. Pegasus takes over: watch it in **Downloads**.
+5. When it finishes, **Library** shows installed games and **Files** shows where things are.
+6. First-run settings worth a look: Settings, **Wings** group, **Link ranking** (your firmware, region and format, so Best fits your console) and **Cover art** / **Popularity data** (both on by default).
 
-## Providers
+More detail: [Getting started](docs/guides/getting-started.md).
 
-| provider | data | default | notes |
-|---|---|---|---|
-| wikipedia | 30-day mean daily pageviews (CC0) | on | article chosen by search, needs a video-game article |
-| steam | percent positive and review count | on | official `IUserReviewsService/GetAppReviews`; name search uses the undocumented `storesearch` |
-| igdb | `total_rating`, rating count | off | needs `--providers wikipedia,steam,igdb` and the two secrets below |
+## Controls
 
-## GitHub setup
+| Button | In lists and grids | In the keyboard |
+|---|---|---|
+| Cross | Open / confirm | Type the key |
+| Circle | Back / up | Cancel (keeps your old search) |
+| Square | Favourite a game; select a file | Delete |
+| Triangle | Search; actions menu in Files | Space (shows the text in a password field) |
+| Options | Utilities (Store), Filters (game page), Operations (Files) | Run the search |
+| L1 / R1 | Switch tab | Move the cursor |
+| R2 | | Run the search |
+| L2 | | Shift |
+| R3 / L3 | | Symbols / Clear |
+| Touchpad | Swipe to scroll or switch tab; click to filter in Files | Slide over the keys, click to type |
 
-Workflow: `.github/workflows/popularity.yml` (weekly, Monday 04:17 UTC, plus manual run). Enable Pages with source
-"GitHub Actions". The job commits `heartbeat.txt` each run so the 60-day inactivity rule does not disable the schedule.
-Actions are pinned by commit SHA; permissions are minimal and per job.
+On a download in Downloads, Cross opens its actions (resume, retry, enter a password, choose what to keep). In Files, while an operation runs, Square cancels it and Triangle opens its destination.
 
-* Repository variable `WINGS_CONTACT`: contact string for the User-Agent.
-* Repository variable `WINGS_PROVIDERS` (optional): `wikipedia,steam,igdb` to turn IGDB on.
-* Repository secrets `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET` (only for IGDB; Twitch 2FA account, confidential
-  app). Secrets are read from the environment only, never from arguments, never printed, never cached, and one token is
-  minted per run.
+## Guides
 
-## Attribution
-
-* Wikipedia pageviews: Wikimedia Foundation analytics data, CC0.
-* Steam: review summaries from Steam (Valve). Only the percent positive and count are published. Not affiliated with Valve.
-* IGDB (if enabled): "Ratings and popularity data from IGDB.com". Free non-commercial use under the Twitch Developer
-  Services Agreement; confirm republishing with partner@igdb.com before enabling it publicly.
-* RAWG is deliberately not used (its terms forbid redistribution).
+| Guide | |
+|---|---|
+| [Getting started](docs/guides/getting-started.md) | Tabs, first run, settings to set once |
+| [Finding and downloading a game](docs/guides/finding-and-downloading.md) | Search, filters, game page, queue |
+| [Link types and what Best means](docs/guides/link-types.md) | Colours, tiers, the ranking order |
+| [The Files tab](docs/guides/files-tab.md) | Browse, select, copy, move, extract, install, cancel |
+| [Archive passwords](docs/guides/archive-passwords.md) | The auto-try, the prompt, "choose what to keep" |
+| [After a download: ShadowMount scan](docs/guides/after-install-scan.md) | Why a new game waits for Wings to close, and the banner |
+| [Popularity data and privacy](docs/guides/popularity-and-privacy.md) | What is fetched, from where, how to stop it |
+| [Troubleshooting and FAQ](docs/guides/troubleshooting.md) | Waiting for Pegasus, covers, "extraction failed", diagnostics |
 
 ## Privacy
 
-The file contains no user data. The Wings app downloads it with a plain GET and sends no identifiers beyond a User-Agent;
-the feature is off by default in the app. This repo's CI sends only the contact string you configure to the providers.
+Wings has no account, no telemetry that this project operates, and no analytics. To the best of the source tree, the console connects to:
+
+| When | To | Why |
+|---|---|---|
+| Always | `127.0.0.1:6970` (Pegasus DL on the same console) | Everything Wings shows and does goes through it. |
+| Cover art **on** (default) | Cloudflare `1.1.1.1` and Google `8.8.8.8` over HTTPS (DNS-over-HTTPS) | Looking up cover servers. They see the host names, for example `image.api.playstation.com`. |
+| Cover art **on** | The cover servers named in your catalogue's poster URLs, over HTTPS | Downloading the images. Those servers see the console's IP address. |
+| Only when you press Check, or at most every 6 hours while Settings > Pegasus DL is open (needs Cover art on) | `api.github.com` (the author's release list, one small file) | Showing the latest official Pegasus DL version. GitHub sees the console's IP address. |
+| Only when you press Download and confirm | `github.com`, then GitHub's `objects.githubusercontent.com` | The official `Pegasus-dl.elf` (about 20 MB), checked against GitHub's SHA-256 before it is saved. Nothing else is accepted. |
+| Popularity **on** (default) | `larazadelsol.github.io` (GitHub Pages), one file, at most once per 24 hours | Scores and ratings, keyed by title ID. GitHub sees the console's IP address. The file has no user data and Wings sends no identifier beyond a fixed `WingsTV/0.1` User-Agent. |
+
+Turn **Cover art** off and Popularity (which needs it) stops too: Wings then makes **no internet connection at all**. Pegasus DL has its own network behaviour (sources, debrid, downloads); that is Pegasus, not Wings. Details: [Popularity data and privacy](docs/guides/popularity-and-privacy.md).
+
+The diagnostics report (`/data/wings/diagnostics.txt`) contains no tokens or links and is meant to be safe to share. The title log (`app.log`) can contain Pegasus log lines; read it before posting.
+
+## Not yet verified on hardware
+
+The last build that ran on a real console was an earlier one (store grid per game, Best card, filters, popularity, touchpad typing, Settings groups). Since then these were added or changed and have only been tested on a PC against a stand-in backend:
+
+- Swipe direction fix; archive-password auto-try (how Pegasus signals a wrong password is assumed).
+- Download all parts; cancel of a large cross-drive move and whether it leaves a partial file; `/api/files/list` of `/mnt`.
+- Cover art and popularity **on by default**; the Tile details setting; the text-prompt keys (R2, Options, L1/R1, L3, Triangle-show); Files redesign polish; R2 full-pull feel.
+- Treating Pegasus' `accepted` operation status as finished.
+
+The plan for the next console run is section 13 of [docs/FIRST-CONSOLE-TEST.md](docs/FIRST-CONSOLE-TEST.md).
+
+## Screenshots
+
+Rendered from the PC preview against a stand-in backend, so the titles are invented.
+
+<p>
+  <img src="docs/screenshots/store-grid.png" width="49%" alt="The Store grid, one tile per game">
+  <img src="docs/screenshots/game-page.png" width="49%" alt="A game page with the Best card and mirror cards">
+</p>
+
+<p>
+  <img src="docs/screenshots/files-whereto.png" width="49%" alt="The Files tab, Where to? browser">
+  <img src="docs/screenshots/search.png" width="49%" alt="Search with live results and recent searches">
+</p>
+<p>
+  <img src="docs/screenshots/downloads.png" width="49%" alt="The downloads queue">
+  <img src="docs/screenshots/settings-wings.png" width="49%" alt="Settings, Wings group">
+</p>
+
+## Build from source
+
+From the repository root, inside WSL with Docker: `bash tools/build-wings-wsl.sh` (add `WITH_TEST=1` for the host unit tests and `WITH_PREVIEW=1` for the PNG preview). See [docs/build.md](docs/build.md). The core library (`core/`) builds with any C++17 compiler; see [core/README.md](core/README.md).
+
+## Credits
+
+Wings is a derivative work of the TV app of **Orbit Store** by saawant12, which is built on the UI kit and PS5 platform layer by **BlackBearReloaded**, with SharpProspero, ps5-payload-dev and others underneath. The popularity data uses IGDB, Steam and Wikimedia. Everyone is named, with versions and licences, in [CREDITS.md](CREDITS.md) and [app/THIRD-PARTY-NOTICES.md](app/THIRD-PARTY-NOTICES.md).
+
+## License
+
+Wings is free software under the **GNU General Public License, version 3 or (at your option) any later version**, the same license as the Orbit Store TV app it is built on. See [LICENSE](LICENSE), [NOTICE](NOTICE) and [CREDITS.md](CREDITS.md). It comes with no warranty. Pegasus DL is not part of this project and is not covered by this license.

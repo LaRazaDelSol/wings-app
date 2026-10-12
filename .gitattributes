@@ -1,0 +1,5 @@
+* text=auto
+*.sh text eol=lf
+*.ps1 text eol=crlf
+*.png binary
+*.ffpkg binary

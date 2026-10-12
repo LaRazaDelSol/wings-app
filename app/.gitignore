@@ -1,0 +1,5 @@
+.deps/
+build/
+dist/
+runtime/libc.prx
+.local/

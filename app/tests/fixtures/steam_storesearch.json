@@ -1,0 +1,6 @@
+{"total":4,"items":[
+{"type":"app","name":"Elden Ring","id":1245620,"price":{"currency":"USD","initial":5999,"final":5999},"tiny_image":"https://shared.example/capsule.jpg","metascore":"94","platforms":{"windows":true,"mac":false,"linux":false},"streamingvideo":false},
+{"type":"app","name":"Elden Ring Shadow of the Erdtree","id":2778580,"price":{"currency":"USD","initial":3999,"final":3999},"metascore":"","platforms":{"windows":true,"mac":false,"linux":false},"streamingvideo":false},
+{"type":"sub","name":"Elden Ring Bundle","id":99999,"price":{"currency":"USD","initial":9999,"final":9999}},
+{"type":"app","name":"ELDEN RING Soundtrack","id":1245621}
+]}

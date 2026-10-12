@@ -1,0 +1,67 @@
+// Wings TV app - Preferences kept on the console by Wings only (never sent to Pegasus DL).
+// SPDX-License-Identifier: GPL-3.0-or-later
+//
+// Link ranking preferences (which link Wings puts first) and the popularity-data
+// switch. Plain strings, so any screen or ranking code can read them without
+// depending on the link model. Persisted as key=value lines in the checked
+// save container (prefs kind), file name chosen by the caller.
+
+#pragma once
+
+#include "orbit/after_download_mode.hpp"
+#include "orbit/pegasus_start_mode.hpp"
+#include "orbit/tile_details.hpp"
+
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace orbit
+{
+
+struct WingsLocalPrefs
+{
+    // Empty means "no preference". Firmware is a family label such as "10.xx".
+    std::string firmware;
+    // One of kRegionChoices ("USA", "EUR", ...).
+    std::string region;
+    // One of kFormatChoices ("exFAT", "FPKG", "PKG", "Dump").
+    std::string format;
+    // Put links a ready debrid account takes ahead of the others.
+    bool prefer_debrid = true;
+    // Popularity data: on by default for a fresh install; a saved "popularity=0" is kept.
+    bool popularity_enabled = true;
+    std::string popularity_url;
+    // Store grid: when tiles show their tier pill and region chips (files from
+    // before this choice have no key and load the default).
+    TileDetails tile_details = TileDetails::on_focus;
+    // What "Waiting for Pegasus DL" does about loading Pegasus DL (ask, auto, manual).
+    PegasusStartMode pegasus_start = PegasusStartMode::ask;
+    // What Wings does when a download finishes: ask ShadowMount to scan (default) or nothing.
+    AfterDownload after_download = AfterDownload::scan;
+
+    bool operator==(const WingsLocalPrefs &other) const;
+};
+
+// The values the Settings pickers offer (the first entry of the picker, "Any", is the empty string).
+extern const char *const kFirmwareChoices[];
+extern const int kFirmwareChoiceCount;
+extern const char *const kRegionChoices[];
+extern const int kRegionChoiceCount;
+extern const char *const kFormatChoices[];
+extern const int kFormatChoiceCount;
+
+// True for "", or a value in the list.
+bool valid_firmware(std::string_view value);
+bool valid_region(std::string_view value);
+bool valid_format(std::string_view value);
+
+std::string encode_local_prefs(const WingsLocalPrefs &prefs);
+// Unknown keys and invalid choices are ignored (the default stays); false only for an empty payload.
+bool decode_local_prefs(std::string_view payload, WingsLocalPrefs *out);
+// First readable, valid file wins. The default stays when none loads.
+bool load_local_prefs(const std::vector<std::string> &paths, WingsLocalPrefs *out);
+// Writes every path that can be written; returns how many were.
+int save_local_prefs(const std::vector<std::string> &paths, const WingsLocalPrefs &prefs);
+
+} // namespace orbit

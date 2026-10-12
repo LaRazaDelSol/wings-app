@@ -1,0 +1,68 @@
+Wings
+=====
+
+Wings is a native PS5 front end for Pegasus DL. It is free software, licensed
+under the GNU General Public License, version 3 or (at your option) any later
+version (GPL-3.0-or-later). See LICENSE. It comes with no warranty.
+
+Wings is a derivative work of Orbit Store
+-----------------------------------------
+
+The application in wings/app/ is forked from the native TV app of Orbit Store
+(app/ in orbit-store-1.1.0, TV app 1.4.0):
+
+    Orbit Store, https://github.com/saawant12/orbit-store-ps5
+    License: GPL-3.0-or-later
+
+Orbit Store's TV app is in turn built on:
+
+    ps5-homebrew-ui and ps5-native-app-boilerplate, Copyright (C) 2026
+    BlackBearReloaded, GPL-3.0-or-later
+    https://github.com/blackbearreloaded/ps5-homebrew-ui
+
+The SPDX-License-Identifier: GPL-3.0-or-later headers of the original files
+are kept as they were. Files that were rewritten for Wings are marked in their
+first line ("Wings TV app - ...") and say in a comment which Orbit Store file
+they were adapted from. Orbit Store's name, logo, icon and artwork are not
+used by Wings; Wings' mark, icon and the preview art are original.
+
+Wings contains none of Orbit Store's backend: no Orbit payload, loader launch
+code, pairing, ShadowMount library client, Zero companion code or update feeds.
+
+ShadowMountPlus
+---------------
+
+Wings can ask ShadowMountPlus (drakmor/ShadowMountPlus, GPL-3.0) to scan for
+new games after a download, through its local HTTP API on 127.0.0.1 (scan and
+game list only). ShadowMountPlus is not part of this project and is not
+bundled, copied or redistributed here.
+
+Pegasus DL
+----------
+
+Wings talks to Pegasus DL over its local HTTP API. Pegasus DL is not part of
+this project, is not copied, bundled, mirrored or redistributed here, and is
+not covered by this license. Wings bundles no catalogues, sources or download
+links.
+
+Only when you ask (Settings > Pegasus DL > Get Pegasus DL, then confirm), Wings
+downloads the author's own official release file (Pegasus-dl.elf) straight from
+the author's release page on github.com (github.com/pegasus-ps5/pegasus-dl),
+checks it against the SHA-256 that GitHub publishes for it, and saves it under
+/data/wings/pegasus/. When Pegasus DL is not running and you choose it on the
+"Waiting for Pegasus DL" screen (Load once, or Auto-Load, which you can turn off
+in Settings > Pegasus DL), Wings re-checks that file against the SHA-256 and sends
+it to the payload loader on this console (127.0.0.1 port 9021). It never does
+this while Pegasus DL answers, and never writes into a payload manager's folder.
+That repository states no licence; the download is your own request to the
+author's server, not a redistribution by this project.
+
+Components
+----------
+
+The app components (kit, ps5-opengl SDK, PS5 payload SDK headers and stubs,
+libwebp, libc++ family, compiler-rt builtins, stb, Inter typeface, glass sound
+set) and their licenses are listed in wings/app/THIRD-PARTY-NOTICES.md. The
+Inter typeface is under the SIL Open Font License 1.1; keep
+app/third_party/fonts/Inter-LICENSE.txt and assets/fonts/Inter-LICENSE.txt
+with the fonts.

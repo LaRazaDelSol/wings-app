@@ -8,3 +8,13 @@ out/
 *.secret
 library.json
 catalogue-titles.json
+
+# Wings build outputs and local tooling
+build-out/
+logs/
+app/build/
+app/preview-out/
+app/.deps/
+app/dist/
+*.ffpkg
+*.zip
