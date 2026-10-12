@@ -1254,7 +1254,7 @@ Result<Art> FakeBackend::art(std::string_view key, ArtKind kind)
     }
     result.status = 200;
     result.value.content_type = "image/png";
-    result.value.bytes = make_art(name, kind == ArtKind::hero);
+    result.value.bytes = make_art(name, kind != ArtKind::cover);
     return result;
 }
 

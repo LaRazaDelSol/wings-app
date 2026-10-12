@@ -1753,6 +1753,9 @@ Intent StoreScreen::update(const InputFrame &input, float dt, Feedback &feedback
             const std::string url = pop_index_->hero(page_.title_ids);
             if (!url.empty() && hero_urls().set(page_.art_key, url))
                 header_.hero_url = url;
+            const std::string low = pop_index_->hero_low(page_.title_ids);
+            if (!low.empty() && hero_urls().set_low(page_.art_key, low))
+                header_.hero_low_url = low;
         }
         // No record in the index: ask for the live Steam review summary (idempotent, one worker, cached).
         if (page_.loaded && pop_index_ != nullptr && pop_index_->best(page_.title_ids) == nullptr)
@@ -2486,7 +2489,9 @@ void StoreScreen::draw_detail(Frame &frame, bool focused) const
         head.rating = header_rating(pop);
         head.facts = header_facts(page_, link_prefs_, started_);
         head.cards = build_header_cards(head.facts);
-        if (!header_.hero_url.empty())
+        head.hero_full = !header_.hero_url.empty();
+        head.hero_low = !header_.hero_low_url.empty();
+        if (head.hero_full || head.hero_low)
             head.hero_key = page_.art_key;
         if (pop != nullptr)
             meta_line += "  \xC2\xB7  " + popularity_line(pop);
@@ -2589,10 +2594,11 @@ void StoreScreen::draw_detail(Frame &frame, bool focused) const
         draw_page_row(list, row, {x, ry, w, row.h}, f);
     }
     list.pop_clip();
-    // More below: a fade says so.
+    // More below: a fade says so. Full width and down to the screen edge, into the colour the hero band
+    // ends on, so it has no edges to show.
     if (page_.height - detail_scroll_.value > kPageListBottom - list_top + 8.0f)
-        list.gradient_rect({x - 28.0f, kPageListBottom - 60.0f, w + 56.0f, 60.0f}, 0.0f,
-                           ui::Color::rgb(0x000000, 0.0f), ui::Color::rgb(0x000000, 0.7f));
+        list.gradient_rect({0.0f, kPageListBottom - 90.0f, 1920.0f, 1080.0f - (kPageListBottom - 90.0f)}, 0.0f,
+                           ui::Color::rgb(0x080808, 0.0f), ui::Color::rgb(0x080808, 0.92f));
 }
 
 void StoreScreen::draw(Frame &frame, bool focused) const

@@ -1545,7 +1545,7 @@ Result<Art> PegasusBackend::art(std::string_view key, ArtKind kind)
     wings::InstalledGame game;
     game.titleId = std::string(key.substr(4));
     const auto reply =
-        a->fetchAppdbArt(wings::logic::installedArtUrl(game, kind == ArtKind::hero ? "pic0" : "icon"));
+        a->fetchAppdbArt(wings::logic::installedArtUrl(game, kind != ArtKind::cover ? "pic0" : "icon"));
     if (!reply.ok())
     {
         fail(&out, reply.error);

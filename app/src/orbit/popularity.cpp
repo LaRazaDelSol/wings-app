@@ -89,6 +89,9 @@ bool PopularityIndex::parse(std::string_view text, PopularityIndex *out, std::st
         if (r["hero"].is_string() && r["hero"].as_string().size() <= 300 &&
             valid_popularity_url(r["hero"].as_string()))
             rec.hero = r["hero"].as_string();
+        if (r["heroLow"].is_string() && r["heroLow"].as_string().size() <= 300 &&
+            valid_popularity_url(r["heroLow"].as_string()))
+            rec.hero_low = r["heroLow"].as_string();
         index.records_[id] = std::move(rec);
     }
     if (index.records_.empty())
@@ -127,6 +130,25 @@ std::string PopularityIndex::hero(const std::vector<std::string> &title_ids) con
             return r->hero;
     }
     return {};
+}
+
+std::string PopularityIndex::hero_low(const std::vector<std::string> &title_ids) const
+{
+    for (const std::string &id : title_ids)
+    {
+        const PopRecord *r = find(id);
+        if (r != nullptr && !r->hero_low.empty())
+            return r->hero_low;
+    }
+    return {};
+}
+
+bool PopularityIndex::has_hero() const
+{
+    for (const auto &entry : records_)
+        if (!entry.second.hero.empty())
+            return true;
+    return false;
 }
 
 bool valid_popularity_url(std::string_view url)
@@ -466,6 +488,7 @@ void PopularityService::run(bool force, std::string url)
     PopularityStatus status;
     status.busy = true;
     bool cache_ok = false;
+    bool cache_has_hero = false; // a saved copy without any hero art predates it: refreshed at once
     std::int64_t fetched = 0;
     // 1. The saved copy. Missing or damaged is fine.
     for (const std::string &path : config_.cache_paths)
@@ -489,10 +512,11 @@ void PopularityService::run(bool force, std::string url)
         status.message = tr("Using the saved copy");
         hub_.set_index(index);
         cache_ok = true;
+        cache_has_hero = index->has_hero();
         break;
     }
     const std::int64_t now = config_.now();
-    const bool fresh = cache_ok && fetched <= now && now - fetched < config_.ttl_s;
+    const bool fresh = cache_ok && cache_has_hero && fetched <= now && now - fetched < config_.ttl_s;
     if (fresh && !force)
     {
         status.busy = false;

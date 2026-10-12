@@ -39,6 +39,8 @@ std::string PosterIndex::resolve(std::string_view key, ArtKind kind) const
     // URL from the popularity index). Grid tiles never ask, so nothing is prefetched.
     if (kind == ArtKind::hero)
         return hero_urls().find(key);
+    if (kind == ArtKind::hero_low)
+        return hero_urls().find_low(key);
     const std::string id(key.substr(4));
     Lock lock(mutex_);
     const auto found = urls_.find(id);

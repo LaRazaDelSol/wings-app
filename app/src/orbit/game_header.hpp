@@ -45,7 +45,10 @@ class HeroUrls
   public:
     // False (and nothing stored) for an invalid URL or an empty key.
     bool set(const std::string &art_key, const std::string &url);
+    // The small stand-in shown while the full one loads (same rules; stored beside it).
+    bool set_low(const std::string &art_key, const std::string &url);
     std::string find(std::string_view art_key) const;
+    std::string find_low(std::string_view art_key) const;
     void clear();
     std::size_t size() const;
 
@@ -54,6 +57,25 @@ class HeroUrls
     std::map<std::string, std::string, std::less<>> urls_;
 };
 HeroUrls &hero_urls();
+
+// ---- hero placement ----
+
+// Where an image of width x height goes in the band, by its shape (a = width / height). The art is only
+// ever scaled uniformly (its proportions never change) until it covers the whole band, and the overflow is
+// cropped: nothing is stretched and the band is always full. A very wide strip would have to zoom so far
+// that a few letters fill the screen, and a square logo would show almost nothing of itself, so those are
+// not used and the page keeps the cover wash:
+//   1.5 .. 3.3   used (Steam's 3.1:1 art loses its sides),
+//   anything else is not used.
+constexpr float kHeroAspectMin = 1.5f;
+constexpr float kHeroAspectMax = 3.3f;
+struct HeroPlacement
+{
+    bool usable = false;
+    ui::Rect dest;                 // inside the band
+    ui::Rect uv{0.0f, 0.0f, 1.0f, 1.0f};
+};
+HeroPlacement place_hero(int width, int height, const ui::Rect &band);
 
 // ---- the info cards ----
 
@@ -166,6 +188,7 @@ struct GameHeaderState
     ui::Ease slide;        // 0: header shown, 1: slid up and the list is at the top
     float focus[kHeaderButtons] = {0.0f, 0.0f, 0.0f};
     std::string hero_url;       // registered for this page ("" none)
+    std::string hero_low_url;   // the small stand-in registered for this page ("" none)
     bool hero_resolved = false; // the popularity index has been asked for this page
     std::vector<HeaderMore> more; // the open "more" menu's rows
 
@@ -186,7 +209,9 @@ struct HeaderView
     bool failed = false;
     std::string status;     // "Loading the links...", or the error
     std::string meta_line;  // "22 links · 5 releases · 2 sources"
-    std::string hero_key;   // art key to ask for ArtKind::hero ("" none registered)
+    std::string hero_key;   // art key to ask for ArtKind::hero / hero_low ("" none registered)
+    bool hero_full = false; // a full hero is registered
+    bool hero_low = false;  // a small one is registered
 };
 
 // The measured layout (the title's width decides one or two lines).

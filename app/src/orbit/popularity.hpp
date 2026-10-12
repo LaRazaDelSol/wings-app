@@ -25,7 +25,7 @@
 namespace orbit
 {
 
-constexpr std::size_t kPopularityMaxBytes = 400u * 1024u;
+constexpr std::size_t kPopularityMaxBytes = 512u * 1024u;
 constexpr double kPopularityMinConfidence = 0.6; // records below this are hidden
 constexpr const char *kPopularityDefaultUrl = "https://larazadelsol.github.io/wings-app/popularity.v1.json";
 
@@ -36,7 +36,8 @@ struct PopRecord
     long rating_count = -1;
     double confidence = 0.0;
     std::vector<std::string> sources;
-    std::string hero; // optional https:// art URL for the game page header ("" none; game_header.hpp)
+    std::string hero;     // optional https:// art URL for the game page header ("" none; game_header.hpp)
+    std::string hero_low; // optional small, fast ~16:9 https:// URL shown until the full hero is there
 };
 
 class PopularityIndex
@@ -54,6 +55,10 @@ class PopularityIndex
     // The hero art URL of a game: the first of its title ids whose record has one (confidence is not
     // asked: art is not a ranking claim). "" when none does.
     std::string hero(const std::vector<std::string> &title_ids) const;
+    // The same for the small "heroLow" image.
+    std::string hero_low(const std::vector<std::string> &title_ids) const;
+    // Any record carries a hero URL (a saved copy without any predates the art and is refreshed).
+    bool has_hero() const;
     std::size_t size() const { return records_.size(); }
     const std::string &generated_at() const { return generated_at_; }
     const std::vector<std::string> &attribution() const { return attribution_; } // one line per source

@@ -38,12 +38,16 @@ std::string doc(const std::string &titles, const std::string &version = "1")
            titles + "}}";
 }
 
-std::string rec(const char *id, int score, double confidence, int rating = 80, int count = 100)
+std::string rec(const char *id, int score, double confidence, int rating = 80, int count = 100,
+                const std::string &extra = "")
 {
     return std::string("\"") + id + "\":{\"score\":" + std::to_string(score) + ",\"rating\":" + std::to_string(rating) +
            ",\"ratingCount\":" + std::to_string(count) + ",\"confidence\":" + std::to_string(confidence) +
-           ",\"sources\":[\"igdb\"],\"fetchedAt\":\"2026-10-12\"}";
+           ",\"sources\":[\"igdb\"],\"fetchedAt\":\"2026-10-12\"" + extra + "}";
 }
+
+const char *const kHeroJson = ",\"hero\":\"https://cdn.example.com/h.webp\"";
+const char *const kLowJson = ",\"heroLow\":\"https://cdn.example.com/l.webp\"";
 
 struct FakeFetcher final : DocFetcher
 {
@@ -180,7 +184,7 @@ TEST(Popularity, FetchCachesAndFailureFallsBackToTheCache)
     config.now = [&now] { return now; };
     FakeFetcher fetcher;
     fetcher.result.status = 200;
-    fetcher.result.body = fixture();
+    fetcher.result.body = doc(rec("PPSA00001", 60, 1.0, 70, 10, kHeroJson));
     {
         PopularityHub hub;
         PopularityService service(hub, fetcher, config);
@@ -226,6 +230,94 @@ TEST(Popularity, FetchCachesAndFailureFallsBackToTheCache)
         service.wait_idle();
         EXPECT_EQ(hub.index(), nullptr);
         EXPECT_NE(hub.status().message.find("Could not refresh"), std::string::npos);
+    }
+}
+
+TEST(Popularity, HeroLowParsesWithTheSameChecksAndLooksUpByTitleId)
+{
+    PopularityIndex index;
+    const std::string both = std::string(kHeroJson) + kLowJson;
+    const std::string bad = ",\"hero\":\"https://cdn.example.com/h.webp\",\"heroLow\":\"http://cdn.example.com/l.webp\"";
+    const std::string longer = ",\"heroLow\":\"https://cdn.example.com/" + std::string(300, 'a') + "\"";
+    const std::string old_style = kHeroJson;
+    ASSERT_TRUE(PopularityIndex::parse(doc(rec("PPSA00001", 60, 1.0, 70, 10, both) + "," +
+                                           rec("PPSA00002", 60, 1.0, 70, 10, bad) + "," +
+                                           rec("PPSA00003", 60, 1.0, 70, 10, longer) + "," +
+                                           rec("PPSA00004", 60, 1.0, 70, 10, old_style) + "," +
+                                           rec("PPSA00005", 60, 1.0, 70, 10, ",\"heroLow\":5")),
+                                       &index, nullptr));
+    EXPECT_EQ(index.hero({"PPSA00001"}), "https://cdn.example.com/h.webp");
+    EXPECT_EQ(index.hero_low({"PPSA00001"}), "https://cdn.example.com/l.webp");
+    // An insecure or oversize heroLow is dropped; the record and its hero stay.
+    EXPECT_EQ(index.hero_low({"PPSA00002"}), "");
+    EXPECT_EQ(index.hero({"PPSA00002"}), "https://cdn.example.com/h.webp");
+    EXPECT_EQ(index.hero_low({"PPSA00003"}), "");
+    EXPECT_EQ(index.hero_low({"PPSA00005"}), "");
+    // Old files (hero only) keep working.
+    EXPECT_EQ(index.hero({"PPSA00004"}), "https://cdn.example.com/h.webp");
+    EXPECT_EQ(index.hero_low({"PPSA00004"}), "");
+    // First title id that has one; unknown ids have none.
+    EXPECT_EQ(index.hero_low({"PPSA00004", "PPSA00001"}), "https://cdn.example.com/l.webp");
+    EXPECT_EQ(index.hero_low({"PPSA09999"}), "");
+    EXPECT_TRUE(index.has_hero());
+}
+
+TEST(Popularity, ASavedCopyWithoutAnyHeroIsRefreshedAtOnce)
+{
+    const std::string dir = tmp_dir();
+    PopularityServiceConfig config;
+    config.cache_paths = {dir + "/pop.v1"};
+    std::int64_t now = 1000000;
+    config.now = [&now] { return now; };
+    FakeFetcher fetcher;
+    fetcher.result.status = 200;
+    fetcher.result.body = doc(rec("PPSA00001", 60, 1.0));
+    {
+        PopularityHub hub;
+        PopularityService service(hub, fetcher, config);
+        service.apply(true, "");
+        service.wait_idle();
+        EXPECT_EQ(fetcher.calls, 1);
+        EXPECT_FALSE(hub.index()->has_hero());
+    }
+    {
+        // Well within the TTL, but the saved copy has no hero art: fetched again.
+        fetcher.result.body = doc(rec("PPSA00001", 60, 1.0, 80, 100, std::string(kHeroJson) + kLowJson));
+        PopularityHub hub;
+        PopularityService service(hub, fetcher, config);
+        service.apply(true, "");
+        service.wait_idle();
+        EXPECT_EQ(fetcher.calls, 2);
+        EXPECT_TRUE(hub.index()->has_hero());
+    }
+    {
+        // Now it has some: within the TTL nothing is fetched.
+        PopularityHub hub;
+        PopularityService service(hub, fetcher, config);
+        service.apply(true, "");
+        service.wait_idle();
+        EXPECT_EQ(fetcher.calls, 2);
+    }
+    {
+        // A saved copy without hero art and a failing fetch: the copy is still used.
+        std::ofstream(dir + "/pop.v1", std::ios::binary | std::ios::trunc) << "x";
+        PopularityHub seed_hub;
+        fetcher.result.body = doc(rec("PPSA00001", 60, 1.0));
+        {
+            PopularityService seed(seed_hub, fetcher, config);
+            seed.apply(true, "");
+            seed.wait_idle();
+        }
+        const int before = fetcher.calls;
+        fetcher.result = DocResult{};
+        fetcher.result.error = "connection refused";
+        PopularityHub hub;
+        PopularityService service(hub, fetcher, config);
+        service.apply(true, "");
+        service.wait_idle();
+        EXPECT_EQ(fetcher.calls, before + 1);
+        ASSERT_NE(hub.index(), nullptr);
+        EXPECT_EQ(hub.index()->size(), 1u);
     }
 }
 

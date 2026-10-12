@@ -23,12 +23,23 @@ constexpr std::size_t kMaxQueued = 96;
 
 std::string make_key(const std::string &art_key, ArtKind kind)
 {
-    return art_key + (kind == ArtKind::hero ? "#hero" : "#cover");
+    switch (kind)
+    {
+    case ArtKind::hero:
+        return art_key + "#hero";
+    case ArtKind::hero_low:
+        return art_key + "#low";
+    default:
+        return art_key + "#cover";
+    }
 }
 
+// Backgrounds of either kind (they share one budget).
 bool is_hero(const std::string &key)
 {
-    return key.size() > 5 && key.compare(key.size() - 5, 5, "#hero") == 0;
+    const auto ends = [&key](const char *tail, std::size_t n)
+    { return key.size() > n && key.compare(key.size() - n, n, tail) == 0; };
+    return ends("#hero", 5) || ends("#low", 4);
 }
 
 } // namespace
@@ -237,7 +248,7 @@ bool ArtCache::work_once()
     }
     if (art.ok() && !art.value.pending)
     {
-        const bool hero = request.kind == ArtKind::hero;
+        const bool hero = request.kind != ArtKind::cover;
         const int width = hero ? limits_.hero_width : limits_.cover_size;
         const int height = hero ? limits_.hero_height : limits_.cover_size;
         decoded.ok = image::decode(art.value.bytes, width, height, &decoded.pixels);

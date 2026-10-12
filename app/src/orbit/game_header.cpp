@@ -74,6 +74,11 @@ bool valid_hero_url(std::string_view url)
     return url.size() <= kHeroUrlMax && valid_popularity_url(url);
 }
 
+namespace
+{
+const char *const kLowTail = "#low";
+}
+
 bool HeroUrls::set(const std::string &art_key, const std::string &url)
 {
     if (art_key.empty() || art_key.size() > 64 || !valid_hero_url(url))
@@ -83,6 +88,23 @@ bool HeroUrls::set(const std::string &art_key, const std::string &url)
         urls_.clear(); // only the open page is ever asked for
     urls_[art_key] = url;
     return true;
+}
+
+bool HeroUrls::set_low(const std::string &art_key, const std::string &url)
+{
+    if (art_key.empty() || art_key.size() > 64 || !valid_hero_url(url))
+        return false;
+    const std::string key = art_key + kLowTail;
+    Lock lock(mutex_);
+    if (urls_.size() >= 8 && urls_.find(key) == urls_.end())
+        urls_.clear();
+    urls_[key] = url;
+    return true;
+}
+
+std::string HeroUrls::find_low(std::string_view art_key) const
+{
+    return find(std::string(art_key) + kLowTail);
 }
 
 std::string HeroUrls::find(std::string_view art_key) const
@@ -108,6 +130,31 @@ HeroUrls &hero_urls()
 {
     static HeroUrls urls;
     return urls;
+}
+
+HeroPlacement place_hero(int width, int height, const ui::Rect &band)
+{
+    HeroPlacement p;
+    if (width <= 0 || height <= 0 || band.w <= 0.0f || band.h <= 0.0f)
+        return p;
+    const float a = static_cast<float>(width) / static_cast<float>(height);
+    if (a < kHeroAspectMin || a > kHeroAspectMax)
+        return p;
+    p.usable = true;
+    p.dest = band;
+    // Fill the band, cropping what overflows (a bit more from the bottom than the top, where the faces are).
+    const float box = band.w / band.h;
+    if (a > box)
+    {
+        p.uv.w = box / a;
+        p.uv.x = (1.0f - p.uv.w) * 0.5f;
+    }
+    else
+    {
+        p.uv.h = a / box;
+        p.uv.y = (1.0f - p.uv.h) * 0.3f;
+    }
+    return p;
 }
 
 // ---- cards ----
@@ -263,6 +310,7 @@ void GameHeaderState::reset()
     for (float &f : focus)
         f = 0.0f;
     hero_url.clear();
+    hero_low_url.clear();
     hero_resolved = false;
     more.clear();
 }
@@ -374,11 +422,30 @@ void draw_game_header(Context &ctx, hui::gfx::DrawList &list, const HeaderView &
     float hero_alpha = 0.0f;
     if (!view.hero_key.empty())
     {
-        if (const Artwork *art = ctx.art.get(view.hero_key, ArtKind::hero))
+        // The full picture is asked for first and the small one after it: the worker serves the newest
+        // request first, so the small one arrives first. Once the full one is there the small one is
+        // not asked for any more. A picture of an unusable shape (place_hero) counts as not there.
+        const Artwork *full = view.hero_full ? ctx.art.get(view.hero_key, ArtKind::hero) : nullptr;
+        const HeroPlacement full_at =
+            full != nullptr ? place_hero(full->width, full->height, band) : HeroPlacement{};
+        const float full_alpha = full_at.usable ? fade_in(*full) : 0.0f;
+        // The small one: until the full one is fully faded in (it stays when the full one is refused).
+        if (view.hero_low && full_alpha < 1.0f)
         {
-            hero_alpha = fade_in(*art);
-            ui::image_cover(list, art->texture, art->width, art->height, band,
-                            ui::Color::rgb(0xffffff, hero_alpha), 0.0f, 0.5f, 0.3f);
+            if (const Artwork *low = ctx.art.get(view.hero_key, ArtKind::hero_low))
+            {
+                const HeroPlacement at = place_hero(low->width, low->height, band);
+                if (at.usable)
+                {
+                    hero_alpha = fade_in(*low);
+                    list.image(low->texture, at.dest, at.uv, ui::Color::rgb(0xffffff, hero_alpha), 0.0f);
+                }
+            }
+        }
+        if (full_at.usable)
+        {
+            hero_alpha = std::max(hero_alpha, full_alpha);
+            list.image(full->texture, full_at.dest, full_at.uv, ui::Color::rgb(0xffffff, full_alpha), 0.0f);
         }
     }
     if (hero_alpha < 1.0f && !view.page->art_key.empty())
@@ -394,7 +461,7 @@ void draw_game_header(Context &ctx, hui::gfx::DrawList &list, const HeaderView &
                             ui::Color::rgb(0xffffff, 0.30f * a), 0.0f, 0.5f, 0.3f);
         }
     }
-    // The Store hue veil (docs/DESIGN-colour.md layer 4), then the dark left-to-right veil under the
+    // The Store hue veil (colour layer 4), then the dark left-to-right veil under the
     // words, the top veil under the app bar and the fade into the page where the list starts.
     list.rounded_rect(band, 0.0f, blue_wash);
     const ui::Color left_clear = ui::Color::rgb(0x03061a, 0.0f);

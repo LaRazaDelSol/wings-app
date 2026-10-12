@@ -46,7 +46,8 @@ template <typename T> struct Result
 enum class ArtKind : std::uint8_t
 {
     cover,
-    hero,
+    hero,     // the full background
+    hero_low, // a small, fast stand-in for it
 };
 
 struct Art

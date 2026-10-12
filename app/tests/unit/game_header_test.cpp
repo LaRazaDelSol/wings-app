@@ -66,11 +66,84 @@ TEST(HeroUrl, TheRegistryHoldsOnlyValidUrlsAndFeedsThePosterResolver)
     EXPECT_EQ(posters.resolve("pkg:1", ArtKind::hero), "");
 }
 
+TEST(HeroUrl, TheSmallStandInHasItsOwnKindAndRegistryEntry)
+{
+    hero_urls().clear();
+    PosterIndex posters;
+    EXPECT_EQ(posters.resolve("pkg:1", ArtKind::hero_low), "");
+    EXPECT_FALSE(hero_urls().set_low("pkg:1", "http://insecure.example/l.webp"));
+    EXPECT_FALSE(hero_urls().set_low("", "https://cdn.example.com/l.webp"));
+    EXPECT_TRUE(hero_urls().set_low("pkg:1", "https://cdn.example.com/l.webp"));
+    EXPECT_EQ(posters.resolve("pkg:1", ArtKind::hero_low), "https://cdn.example.com/l.webp");
+    // Only the small one is registered: the full kind and the cover resolve nothing.
+    EXPECT_EQ(posters.resolve("pkg:1", ArtKind::hero), "");
+    EXPECT_EQ(posters.resolve("pkg:1", ArtKind::cover), "");
+    EXPECT_TRUE(hero_urls().set("pkg:1", "https://cdn.example.com/h.webp"));
+    EXPECT_EQ(posters.resolve("pkg:1", ArtKind::hero), "https://cdn.example.com/h.webp");
+    EXPECT_EQ(posters.resolve("pkg:1", ArtKind::hero_low), "https://cdn.example.com/l.webp");
+    EXPECT_EQ(posters.resolve("pkg:2", ArtKind::hero_low), "");
+    EXPECT_EQ(posters.resolve("app:PPSA01234", ArtKind::hero_low), "");
+    hero_urls().clear();
+    EXPECT_EQ(posters.resolve("pkg:1", ArtKind::hero_low), "");
+}
+
+TEST(HeroPlacement, TheArtAlwaysFillsTheBandUniformlyAndCropsTheOverflow)
+{
+    const ui::Rect band{0.0f, 0.0f, 1920.0f, 1080.0f};
+    // 16:9 fills exactly.
+    HeroPlacement p = place_hero(1920, 1080, band);
+    ASSERT_TRUE(p.usable);
+    EXPECT_FLOAT_EQ(p.dest.w, 1920.0f);
+    EXPECT_FLOAT_EQ(p.dest.h, 1080.0f);
+    EXPECT_FLOAT_EQ(p.uv.w, 1.0f);
+    EXPECT_FLOAT_EQ(p.uv.h, 1.0f);
+    // 1.9:1 (wider than the band): the sides are cropped a little.
+    p = place_hero(1900, 1000, band);
+    ASSERT_TRUE(p.usable);
+    EXPECT_FLOAT_EQ(p.dest.h, 1080.0f);
+    EXPECT_LT(p.uv.w, 1.0f);
+    EXPECT_GT(p.uv.w, 0.9f);
+    EXPECT_NEAR(p.uv.x, (1.0f - p.uv.w) * 0.5f, 1e-5f);
+    // 1.5:1 (taller than the band): the top and bottom are cropped a little.
+    p = place_hero(1500, 1000, band);
+    ASSERT_TRUE(p.usable);
+    EXPECT_LT(p.uv.h, 1.0f);
+    EXPECT_FLOAT_EQ(p.uv.w, 1.0f);
+    // Steam's 1920x620 (3.1:1): fills the band, the sides cropped, never black below it.
+    p = place_hero(1920, 620, band);
+    ASSERT_TRUE(p.usable);
+    EXPECT_FLOAT_EQ(p.dest.x, 0.0f);
+    EXPECT_FLOAT_EQ(p.dest.y, 0.0f);
+    EXPECT_FLOAT_EQ(p.dest.w, 1920.0f);
+    EXPECT_FLOAT_EQ(p.dest.h, 1080.0f);
+    EXPECT_FLOAT_EQ(p.uv.h, 1.0f);
+    EXPECT_NEAR(p.uv.w, (1920.0f / 1080.0f) / (1920.0f / 620.0f), 1e-4f);
+    // Alan Wake 2's 4.8:1 banner would have to zoom to a few letters: not used (the cover wash stays).
+    EXPECT_FALSE(place_hero(1920, 399, band).usable);
+}
+
+TEST(HeroPlacement, SquaresBannersAndEmptyImagesAreNotUsed)
+{
+    const ui::Rect band{0.0f, 0.0f, 1920.0f, 1080.0f};
+    EXPECT_FALSE(place_hero(1000, 1000, band).usable); // a square logo
+    EXPECT_FALSE(place_hero(1400, 1000, band).usable);
+    EXPECT_TRUE(place_hero(1500, 1000, band).usable);
+    EXPECT_TRUE(place_hero(3300, 1000, band).usable);
+    EXPECT_FALSE(place_hero(3400, 1000, band).usable);
+    EXPECT_FALSE(place_hero(6000, 1000, band).usable); // a banner
+    EXPECT_FALSE(place_hero(0, 100, band).usable);
+    EXPECT_FALSE(place_hero(100, 0, band).usable);
+    EXPECT_FALSE(place_hero(1920, 1080, ui::Rect{0.0f, 0.0f, 0.0f, 0.0f}).usable);
+}
+
 TEST(HeroUrl, TheRegistryStaysSmall)
 {
     hero_urls().clear();
     for (int i = 0; i < 40; ++i)
+    {
         EXPECT_TRUE(hero_urls().set("pkg:" + std::to_string(i), "https://cdn.example.com/h.webp"));
+        EXPECT_TRUE(hero_urls().set_low("pkg:" + std::to_string(i), "https://cdn.example.com/l.webp"));
+    }
     EXPECT_LE(hero_urls().size(), 8u);
     hero_urls().clear();
 }
