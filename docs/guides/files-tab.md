@@ -17,7 +17,7 @@ Files shows the console's file system from `/`, through Pegasus' file API. Wings
 
 ## Operations
 
-**Options** shows the operations Pegasus is running. Select one: Square cancels it ("Stop it"), Triangle opens its destination. A cancelled large cross-drive move may leave a partial file at the destination; delete it yourself. (Whether it does is not yet verified on a console.)
+**Options** shows the operations Pegasus is running. Select one: Square cancels it ("Stop it"), Triangle opens its destination. A cancelled large cross-drive move may leave a partial file at the destination; delete it yourself.
 
 ## Advice
 

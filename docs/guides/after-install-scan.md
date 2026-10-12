@@ -22,4 +22,4 @@ Settings > Wings > **After a download finishes**: **Ask ShadowMount to scan** (d
 
 - The scan cannot be forced while Wings is open; ShadowMount decides when it is safe.
 - The title must be one ShadowMount can register (folders and images in its scan paths). If Pegasus installed it somewhere ShadowMount does not scan, it will not appear.
-- Wings does not bundle or change ShadowMount. This uses its documented local API (drakmor/ShadowMountPlus, GPL-3.0). *(Not yet hardware-tested.)*
+- Wings does not bundle or change ShadowMount. This uses its documented local API (drakmor/ShadowMountPlus, GPL-3.0).
