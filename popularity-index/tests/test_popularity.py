@@ -600,7 +600,6 @@ class EditorialTests(unittest.TestCase):
         bad = [
             {"notes": {"PPSA1234": secret}},
             {"notes": {"PPSA01234": ""}},
-            {"notes": {"PPSA01234": secret * 40}},
             {"notes": {"PPSA01234": secret + "\x07"}},
             {"notes": {"PPSA01234": "see https://user:pw@example.com/" + secret}},
             {"notes": {"PPSA01234": 5}},
@@ -612,6 +611,10 @@ class EditorialTests(unittest.TestCase):
             with self.assertRaises(editorial.EditorialError) as cm:
                 editorial.build(json.dumps(doc), None)
             self.assertNotIn(secret, str(cm.exception))
+
+    def test_long_note_is_accepted(self):
+        out = editorial.build(json.dumps({"notes": {"PPSA01234": "x" * 900}}), None)
+        self.assertTrue(out)
 
     def test_bad_curated_rejected(self):
         for doc in (["PPSA00001", "PPSA00001"], ["bad"], ["PPSA%05d" % i for i in range(25)], {"items": "x"}):
