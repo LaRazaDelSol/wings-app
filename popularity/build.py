@@ -154,6 +154,7 @@ def run(args, environ=None, http=None, log=lambda m: print(m, file=sys.stderr)):
     with open(args.out + ".sha256", "w", encoding="utf-8", newline="\n") as f:
         f.write("%s  %s\n" % (hashlib.sha256(text.encode("utf-8")).hexdigest(), os.path.basename(args.out)))
     if args.report:
+        os.makedirs(os.path.dirname(os.path.abspath(args.report)), exist_ok=True)
         with open(args.report, "w", encoding="utf-8", newline="\n") as f:
             f.write(reportmod.render(entries, results, records, used, doc["generatedAt"], skipped))
     log("wrote %s: %d of %d titles, %d bytes" % (args.out, len(records), len(entries), size))

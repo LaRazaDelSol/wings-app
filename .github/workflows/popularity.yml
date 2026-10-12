@@ -29,7 +29,7 @@ jobs:
       - name: Unit tests (no network)
         run: python -m unittest discover -s tests
       - name: Restore provider response cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .cache/http
           key: http-${{ github.run_id }}
@@ -53,6 +53,12 @@ jobs:
           python build_index.py --catalogue catalogue-titles.json --overrides overrides.json \
             --providers "$WINGS_PROVIDERS" --out site/popularity.v1.json --report out/report.md \
             --max-bytes 400000
+      - name: Save provider response cache (also after a failure, so a retry is fast)
+        if: always()
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: .cache/http
+          key: http-${{ github.run_id }}
       - name: Upload report
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:

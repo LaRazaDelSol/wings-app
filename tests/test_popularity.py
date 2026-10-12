@@ -266,6 +266,13 @@ class BuildTests(unittest.TestCase):
             self.assertTrue(os.path.exists(os.path.join(tmp, "o", "report.md")))
             self.assertTrue(os.path.exists(os.path.join(tmp, "o", "p.json.sha256")))
 
+    def test_report_in_a_missing_separate_folder(self):
+        # CI writes site/popularity.v1.json and out/report.md: two different, not yet existing folders.
+        with tempfile.TemporaryDirectory() as tmp:
+            a = self.args(tmp, out=os.path.join(tmp, "site", "p.json"), report=os.path.join(tmp, "out", "report.md"))
+            build.run(a, environ={}, http=self.http(), log=lambda m: None)
+            self.assertTrue(os.path.exists(os.path.join(tmp, "out", "report.md")))
+
     def test_overrides_ignore_and_force(self):
         entries = [Entry("PPSA00001", "Hades II"), Entry("PPSA00002", "Whatever")]
         provs, _ = build.make_providers(["steam"], self.http(), datetime.date(2026, 10, 11), {})
