@@ -22,7 +22,7 @@ One clean page per game. See what every link is before you press it. Manage your
 
 ## Screenshots
 
-Rendered from the PC preview against a stand-in backend, so the titles are invented.
+Rendered from a stand-in back-end. May not represent actual.
 
 <p>
   <img src="docs/screenshots/store-grid.png" width="49%" alt="The Store grid, one tile per game">
