@@ -107,6 +107,7 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(s.rating_count, 65870)
         self.assertAlmostEqual(s.rating, 96.7, places=1)
         self.assertGreaterEqual(s.confidence, 0.85)
+        self.assertTrue(s.image_url.endswith("/apps/1145350/library_hero.jpg"))
 
     def test_steam_override_and_error(self):
         http = FakeHttp({"GetAppReviews": fx("steam_reviews_hades.json")})
@@ -146,6 +147,8 @@ class ProviderTests(unittest.TestCase):
         self.assertEqual(s.external_id, 119133)
         self.assertEqual(s.rating, 95.4)
         self.assertEqual(s.rating_count, 3000)
+        self.assertEqual(s.image_url, "https://images.igdb.com/igdb/image/upload/t_1080p/ar1abc.jpg")
+        self.assertIn("artworks.image_id", http.calls[-1][2])
         self.assertEqual(http.headers["Client-ID"], "cid")
         self.assertIn("platforms = (167,48)", http.calls[-1][2])
         p.lookup(Entry("PPSA2", "Elden Ring"))
@@ -262,7 +265,8 @@ class BuildTests(unittest.TestCase):
             self.assertIn("steam", doc["attribution"])
             self.assertEqual(list(doc["titles"]), sorted(doc["titles"]))
             rec = doc["titles"]["PPSA00001"]
-            self.assertEqual(set(rec), {"score", "rating", "ratingCount", "sources", "confidence", "fetchedAt"})
+            self.assertEqual(set(rec), {"score", "rating", "ratingCount", "sources", "confidence", "fetchedAt", "hero"})
+            self.assertEqual(rec["hero"], "https://cdn.cloudflare.steamstatic.com/steam/apps/1145350/library_hero.jpg")
             self.assertTrue(os.path.exists(os.path.join(tmp, "o", "report.md")))
             self.assertTrue(os.path.exists(os.path.join(tmp, "o", "p.json.sha256")))
 
@@ -308,6 +312,61 @@ class BuildTests(unittest.TestCase):
         self.assertIn("| steam | 2 | 1 | 1 | 0 |", md)
         self.assertIn("Low confidence (1)", md)
         self.assertIn("PPSA3  C", md)
+
+
+class HeroTests(unittest.TestCase):
+    def s(self, src, conf=1.0, amb=False, url=None):
+        return Signal(src, 1, "x", conf, ambiguous=amb, rating=90, rating_count=100, attention=5, image_url=url)
+
+    def rec(self, *sigs):
+        return blend.blend({"PPSA1": list(sigs)}, "2026-10-11")["PPSA1"]
+
+    def test_steam_preferred_over_igdb(self):
+        r = self.rec(self.s("steam", url="https://cdn.cloudflare.steamstatic.com/steam/apps/1/library_hero.jpg"),
+                     self.s("igdb", url="https://images.igdb.com/igdb/image/upload/t_1080p/a.jpg"))
+        self.assertIn("steamstatic", r["hero"])
+
+    def test_igdb_when_no_steam(self):
+        r = self.rec(self.s("steam"), self.s("igdb", url="https://images.igdb.com/igdb/image/upload/t_1080p/a.jpg"))
+        self.assertIn("igdb", r["hero"])
+
+    def test_low_confidence_or_ambiguous_or_http_gets_none(self):
+        self.assertNotIn("hero", self.rec(self.s("steam", conf=0.7, url="https://x/y.jpg")))
+        self.assertNotIn("hero", self.rec(self.s("steam", conf=0.5, amb=True, url="https://x/y.jpg")))
+        self.assertNotIn("hero", self.rec(self.s("steam", url="http://x/y.jpg")))
+
+    def test_igdb_rejects_odd_image_id(self):
+        g = {"artworks": [{"image_id": "../x"}], "screenshots": [{"image_id": "ok1"}]}
+        self.assertTrue(Igdb._image_url(g).endswith("/ok1.jpg"))
+        self.assertIsNone(Igdb._image_url({"artworks": [{"image_id": "a b"}]}))
+
+    def test_hero_is_small_and_additive(self):
+        r = self.rec(self.s("steam", url="https://cdn.cloudflare.steamstatic.com/steam/apps/1145350/library_hero.jpg"))
+        self.assertLess(len(json.dumps(r, separators=(",", ":"))), 300)
+
+    def test_verify_hero_falls_back_to_header(self):
+        import verify_hero
+        base = "https://cdn.cloudflare.steamstatic.com/steam/apps/%d/"
+        doc = {"titles": {"PPSA1": {"hero": base % 1 + "library_hero.jpg"},
+                          "PPSA2": {"hero": base % 2 + "library_hero.jpg"},
+                          "PPSA3": {"hero": base % 3 + "library_hero.jpg"}, "PPSA4": {}}}
+        ok = {base % 1 + "library_hero.jpg", base % 2 + "header.jpg"}
+        n, bad = verify_hero.verify(doc, lambda u: u in ok, fix=True)
+        self.assertEqual((n, bad), (3, ["PPSA2", "PPSA3"]))
+        self.assertTrue(doc["titles"]["PPSA2"]["hero"].endswith("header.jpg"))
+        self.assertNotIn("hero", doc["titles"]["PPSA3"])
+
+
+class CatalogueExportTests(unittest.TestCase):
+    def test_titles_json_from_in_app_export(self):
+        rows = [{"titleId": "PPSA00009", "title": "B"}, {"titleId": "CUSA00001", "title": "A"},
+                {"titleId": "PPSA00009", "title": "dup"}, {"titleId": "NOPE", "title": "x"}]
+        with tempfile.TemporaryDirectory() as tmp:
+            p = os.path.join(tmp, "titles.json")
+            with open(p, "w", encoding="utf-8") as f:
+                json.dump(rows, f)
+            es = build.load_catalogue(p)
+        self.assertEqual([(e.title_id, e.title) for e in es], [("CUSA00001", "A"), ("PPSA00009", "B")])
 
 
 class ExtractTests(unittest.TestCase):

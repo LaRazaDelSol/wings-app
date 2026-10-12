@@ -14,6 +14,8 @@ imputation). A title with no signal gets no record at all.
 rating      = mean of raw (unshrunk) ratings of the available rating sources, weighted by QUAL_WEIGHTS.
 ratingCount = sum of rating counts of those sources.   (both absent when no rating source matched)
 confidence  = min match confidence over the signals used.
+hero        = optional https artwork URL (steam library_hero, else igdb artwork/screenshot), only from a
+              signal with confidence >= HERO_MIN_CONFIDENCE and not ambiguous. Never affects the score.
 """
 import bisect
 
@@ -53,6 +55,21 @@ def source_means(signals_by_title):
     return {k: sum(v) / len(v) for k, v in acc.items()}
 
 
+HERO_MIN_CONFIDENCE = 0.85  # matcher.ACCEPT: art is only attached to confidently matched, unambiguous titles
+HERO_SOURCES = ("steam", "igdb")  # preference order
+
+
+def pick_hero(sigs):
+    by = {s.source: s for s in sigs}
+    for src in HERO_SOURCES:
+        s = by.get(src)
+        url = getattr(s, "image_url", None)
+        if (s and url and not s.ambiguous and s.confidence >= HERO_MIN_CONFIDENCE
+                and url.startswith("https://")):
+            return url
+    return None
+
+
 def blend_one(sigs, tables, means):
     pop, qual, raw = [], [], []
     for s in sigs:
@@ -72,6 +89,9 @@ def blend_one(sigs, tables, means):
         return None
     rec = {"score": int(round(_wmean(groups))), "sources": sorted(s.source for s in sigs),
            "confidence": round(min(s.confidence for s in sigs), 2)}
+    hero = pick_hero(sigs)
+    if hero:
+        rec["hero"] = hero
     if raw:
         rec["rating"] = int(round(_wmean([(w, r) for w, r, _ in raw])))
         rec["ratingCount"] = sum(n for _, _, n in raw)

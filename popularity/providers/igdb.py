@@ -7,6 +7,7 @@ in error text. One token per run. Limits: 4 req/s (net.py), backend only.
 PS5 platform id 167, PS4 48 (from memory in the research doc; unverified)."""
 import datetime
 import os
+import re
 import urllib.parse
 
 from ..matcher import Candidate, rank
@@ -15,8 +16,9 @@ from ..net import HttpError
 
 TOKEN_URL = "https://id.twitch.tv/oauth2/token"
 GAMES_URL = "https://api.igdb.com/v4/games"
+IMAGE = "https://images.igdb.com/igdb/image/upload/t_1080p/%s.jpg"
 PLATFORMS = "(167,48)"
-FIELDS = "name,first_release_date,platforms,total_rating,total_rating_count,rating,rating_count"
+FIELDS = "name,first_release_date,platforms,total_rating,total_rating_count,rating,rating_count,artworks.image_id,screenshots.image_id"
 
 
 class Igdb(Provider):
@@ -58,6 +60,16 @@ class Igdb(Provider):
             return None
         return datetime.datetime.fromtimestamp(ts, datetime.timezone.utc).year
 
+    @staticmethod
+    def _image_url(g):
+        """First artwork, else first screenshot; only plain image_id tokens are accepted."""
+        for key in ("artworks", "screenshots"):
+            for it in g.get(key) or []:
+                iid = it.get("image_id") if isinstance(it, dict) else None
+                if isinstance(iid, str) and re.fullmatch(r"[a-z0-9]{1,40}", iid):
+                    return IMAGE % iid
+        return None
+
     def lookup(self, entry, override=None):
         try:
             if override:
@@ -80,4 +92,4 @@ class Igdb(Provider):
         if rating is None:
             return None
         return Signal(self.name, g["id"], g.get("name", ""), conf, amb, rating=round(float(rating), 1),
-                      rating_count=int(count or 0))
+                      rating_count=int(count or 0), image_url=self._image_url(g))

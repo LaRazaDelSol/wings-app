@@ -11,11 +11,12 @@ class Signal:
     magnitude (daily views, review count, ...) that the blend turns into a percentile."""
 
     def __init__(self, source, external_id, external_name, confidence, ambiguous=False,
-                 rating=None, rating_count=None, attention=None, attention_kind=None):
+                 rating=None, rating_count=None, attention=None, attention_kind=None, image_url=None):
         self.source, self.external_id, self.external_name = source, external_id, external_name
         self.confidence, self.ambiguous = confidence, ambiguous
         self.rating, self.rating_count = rating, rating_count
         self.attention, self.attention_kind = attention, attention_kind
+        self.image_url = image_url  # optional https artwork URL built from a public id (hero)
 
 
 class Provider:

@@ -1,6 +1,7 @@
 """Steam: name search (undocumented storesearch, see research) + official
 IUserReviewsService/GetAppReviews summary. Publishes only percent positive and count.
-Anonymous use; ~1 req/s with backoff (net.py)."""
+Anonymous use; ~1 req/s with backoff (net.py).Also derives the public hero art URL from the matched appid (no extra request).
+"""
 import json
 
 from ..matcher import Candidate, rank
@@ -8,6 +9,7 @@ from ..models import Provider, ProviderError, Signal
 from ..net import HttpError
 
 SEARCH = "https://store.steampowered.com/api/storesearch/"
+HERO = "https://cdn.cloudflare.steamstatic.com/steam/apps/%d/library_hero.jpg"
 REVIEWS = "https://api.steampowered.com/IUserReviewsService/GetAppReviews/v1/"
 
 
@@ -53,4 +55,4 @@ class Steam(Provider):
             return None
         pct, total = s
         return Signal(self.name, appid, name, conf, amb, rating=pct, rating_count=total,
-                      attention=total, attention_kind="reviews")
+                      attention=total, attention_kind="reviews", image_url=HERO % int(appid))
