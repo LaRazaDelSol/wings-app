@@ -7,6 +7,7 @@
 #include "orbit/i18n.hpp"
 #include "orbit/json.hpp"
 
+#include <algorithm>
 #include <cstdlib>
 
 namespace orbit
@@ -361,7 +362,9 @@ void EditorialService::run()
         status.updated = fetched;
         status.message = "Using the saved copy";
     }
-    if (cache_ok && cache_current && fetched <= now && now - fetched < config_.ttl_s)
+    // A file that was not there is looked for again soon: it may simply not have been published yet.
+    const int ttl = (notes_body.empty() || curated_body.empty()) ? std::min(config_.ttl_s, 600) : config_.ttl_s;
+    if (cache_ok && cache_current && fetched <= now && now - fetched < ttl)
     {
         status.busy = false;
         hub_.set_status(status);

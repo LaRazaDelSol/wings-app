@@ -40,10 +40,16 @@ constexpr float kCarouselArtAspect = 16.0f / 9.0f;
 // id (a game that comes up twice is kept once), at most kCarouselMaxItems. Indexes into `games`.
 std::vector<int> resolve_carousel(const std::vector<std::string> &ids, const std::vector<GameGroup> &games);
 
-// Shown only in the grid's default view: the preference on, at least one game found, no search, no filter and
-// the default sort, and something in the grid below it.
-bool carousel_shown(bool pref_on, std::size_t resolved, bool query_empty, bool filtered, bool default_sort,
-                    std::size_t tiles);
+// Shown whenever the preference is on and there is something to show: at least one game, no search under way and
+// something in the grid below it. Filters and the sort do not hide it.
+bool carousel_shown(bool pref_on, std::size_t resolved, bool query_empty, std::size_t tiles);
+
+// How many games the carousel falls back to when the featured list gives none (nothing fetched, or none of the
+// featured games is in the catalogue).
+constexpr std::size_t kCarouselFallbackItems = 5;
+// The `count` games with the largest popularity key (keys[i] belongs to games[i]; -1 = no data, sorts last). With
+// no data at all it is simply the first `count` games. Indexes into the list the keys came from.
+std::vector<int> pick_most_popular(const std::vector<long> &keys, std::size_t count);
 
 // The two focus stops.
 constexpr int kCarouselInstall = 0;

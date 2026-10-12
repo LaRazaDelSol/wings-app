@@ -11,6 +11,7 @@
 #include "orbit/screens.hpp"
 #include "orbit/editorial.hpp"
 #include "orbit/filter_menu.hpp"
+#include "orbit/game_hero.hpp"
 
 #include "orbit/model.hpp"
 #include "orbit/popularity.hpp"
@@ -395,12 +396,22 @@ void StoreScreen::rebuild()
         seen_editorial_ = editorial.serial();
         std::vector<int> found;
         if (editorial.carousel_enabled())
+        {
             found = resolve_carousel(editorial.curated_ids(), games_.games);
+            if (found.empty())
+            {
+                // Nothing featured here: the most popular games of this catalogue instead (or its first ones).
+                std::vector<long> keys;
+                keys.reserve(games_.games.size());
+                for (const GameGroup &game : games_.games)
+                    keys.push_back(popularity_sort_key(SortMode::popular, &pop_view_, game.title_ids));
+                found = pick_most_popular(keys, kCarouselFallbackItems);
+            }
+        }
         const WingsLocalPrefs &prefs = prefs_source_ != nullptr ? *prefs_source_ : own_prefs_;
         const HeroSource source = prefs.hero_source;
         const bool was_on = carousel_on_;
-        carousel_on_ = carousel_shown(editorial.carousel_enabled(), found.size(), query_.empty(), state_.filtered(),
-                                      effective_sort(state_.sort, &pop_view_) == SortMode::az, tiles_.size());
+        carousel_on_ = carousel_shown(editorial.carousel_enabled(), found.size(), query_.empty(), tiles_.size());
         // Keep the slide on the same game when the list only changed around it.
         const int kept = car_slide_ >= 0 && car_slide_ < static_cast<int>(carousel_games_.size())
                              ? carousel_games_[static_cast<std::size_t>(car_slide_)]
@@ -2872,7 +2883,9 @@ void StoreScreen::draw_detail(Frame &frame, bool focused) const
         ui::text(list, type.semibold, "!", nx + 14.0f - bang * 0.5f, base - 1.0f, 21.0f, ui::Color::rgb(0x181818));
         ui::text(list, type.semibold, tr("Known problem"), nx + 40.0f, base - 1.0f, 21.0f, amber);
         // Any length: the type shrinks (21 down to 14 px) until the note fits two lines, then it is cut with "...".
-        const float note_w = head_layout.text_w - 40.0f;
+        // Beside the facts panel, never under it: the column ends where the panel starts.
+        const float note_right = 1920.0f - ui::kGutter - hero::kPanelW - hero::kPanelGap;
+        const float note_w = std::max(320.0f, std::min(head_layout.text_w, note_right - nx) - 40.0f);
         const float note_size = ui::fit_size(type.regular, note, 21.0f, 14.0f, note_w * 1.8f);
         ui::paragraph(list, type.regular, note, nx + 40.0f, base + 32.0f, note_size, note_w, note_size * 1.43f,
                       ui::color::text2, 2);

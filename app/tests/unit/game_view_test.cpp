@@ -485,6 +485,42 @@ TEST(GamePageScreen, DownloadAllPartsConfirmsThenQueuesEachPartAndReportsFailure
     EXPECT_FALSE(s.list_dialog().is_open());
 }
 
+// The first-download folder question, reached through a multi-part set that opens the PS5 browser: it must go
+// away once answered and let the download carry on.
+TEST(GamePageScreen, TheFirstDownloadQuestionClosesAfterABrowserPartAndTheDownloadGoesOn)
+{
+    Rig r;
+    bool confirmed = false;
+    r.context.folder_confirmed = [&confirmed] { return confirmed; };
+    r.context.confirm_folder = [&confirmed] { confirmed = true; };
+    StoreScreen &s = r.screen();
+    s.open_package("pkg26");
+    r.work();
+    ASSERT_TRUE(s.detail_open());
+    const int akira = find_mirror(s.game_page(), "Akirabox", 4);
+    ASSERT_GE(akira, 0);
+    ASSERT_TRUE(s.focus_page_mirror(akira));
+    // Walk the dialogs (parts list, confirmations) until the folder question shows up.
+    int guard = 0;
+    while (!s.folder_ask_open() && guard++ < 8)
+    {
+        r.press(hui::Action::confirm);
+        r.work();
+    }
+    ASSERT_TRUE(s.folder_ask_open());
+    EXPECT_EQ(r.backend.started_links(), 0); // nothing before the answer
+    r.press(hui::Action::confirm);           // "Keep this folder"
+    r.work();
+    EXPECT_TRUE(confirmed);
+    EXPECT_FALSE(s.folder_ask_open()); // gone
+    // ... and it did not come back by itself.
+    for (int i = 0; i < 5; ++i)
+        r.frame();
+    EXPECT_FALSE(s.folder_ask_open());
+    r.work();
+    EXPECT_GE(r.backend.started_links(), 1);
+}
+
 TEST(GamePageScreen, TheBestCardRunsTheExistingLinkFlowAndOptionsOpensTheFilters)
 {
     Rig r;

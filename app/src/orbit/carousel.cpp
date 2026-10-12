@@ -28,10 +28,26 @@ std::vector<int> resolve_carousel(const std::vector<std::string> &ids, const std
     return out;
 }
 
-bool carousel_shown(bool pref_on, std::size_t resolved, bool query_empty, bool filtered, bool default_sort,
-                    std::size_t tiles)
+bool carousel_shown(bool pref_on, std::size_t resolved, bool query_empty, std::size_t tiles)
 {
-    return pref_on && resolved > 0 && query_empty && !filtered && default_sort && tiles > 0;
+    return pref_on && resolved > 0 && query_empty && tiles > 0;
+}
+
+std::vector<int> pick_most_popular(const std::vector<long> &keys, std::size_t count)
+{
+    std::vector<int> order;
+    bool any = false;
+    for (std::size_t i = 0; i < keys.size(); ++i)
+    {
+        order.push_back(static_cast<int>(i));
+        any = any || keys[i] >= 0;
+    }
+    if (any)
+        std::stable_sort(order.begin(), order.end(), [&keys](int a, int b)
+                         { return keys[static_cast<std::size_t>(a)] > keys[static_cast<std::size_t>(b)]; });
+    if (order.size() > count)
+        order.resize(count);
+    return order;
 }
 
 int carousel_wrap(int slide, int delta, int count)

@@ -52,13 +52,21 @@ TEST(Carousel, KeepsAtMostEightGames)
 
 TEST(Carousel, ShowsOnlyInTheDefaultGridView)
 {
-    EXPECT_TRUE(carousel_shown(true, 3, true, false, true, 100));
-    EXPECT_FALSE(carousel_shown(false, 3, true, false, true, 100)); // switch off
-    EXPECT_FALSE(carousel_shown(true, 0, true, false, true, 100));  // nothing resolved
-    EXPECT_FALSE(carousel_shown(true, 3, false, false, true, 100)); // a search
-    EXPECT_FALSE(carousel_shown(true, 3, true, true, true, 100));   // a filter
-    EXPECT_FALSE(carousel_shown(true, 3, true, false, false, 100)); // another sort
-    EXPECT_FALSE(carousel_shown(true, 3, true, false, true, 0));    // empty grid
+    EXPECT_TRUE(carousel_shown(true, 3, true, 100));
+    EXPECT_FALSE(carousel_shown(false, 3, true, 100)); // switch off
+    EXPECT_FALSE(carousel_shown(true, 0, true, 100));  // nothing resolved
+    EXPECT_FALSE(carousel_shown(true, 3, false, 100)); // a search
+    EXPECT_FALSE(carousel_shown(true, 3, true, 0));    // empty grid
+}
+
+TEST(Carousel, FallsBackToTheMostPopularGames)
+{
+    // Keys: -1 = no data. The three largest, largest first; ties keep the catalogue order.
+    EXPECT_EQ(pick_most_popular({10, -1, 70, 70, 5, 40}, 3), (std::vector<int>{2, 3, 5}));
+    // Nothing known: the first ones.
+    EXPECT_EQ(pick_most_popular({-1, -1, -1, -1}, 3), (std::vector<int>{0, 1, 2}));
+    EXPECT_EQ(pick_most_popular({4, 9}, 5), (std::vector<int>{1, 0}));
+    EXPECT_TRUE(pick_most_popular({}, 5).empty());
 }
 
 TEST(Carousel, WrapsSlides)

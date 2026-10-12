@@ -447,6 +447,10 @@ class StoreScreen final : public Screen
     {
         return list_;
     }
+    bool folder_ask_open() const
+    {
+        return folder_ask_.is_open();
+    }
     bool confirm_open() const
     {
         return confirm_.is_open();
