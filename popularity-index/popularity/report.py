@@ -2,8 +2,14 @@
 from .matcher import ACCEPT
 
 
-def render(entries, results, records, providers, generated_at, skipped=None):
-    """results: {titleId: {source: Signal | None | 'error' | 'ignored'}}"""
+def render(entries, results, records, providers, generated_at, skipped=None, ids_only=False):
+    """results: {titleId: {source: Signal | None | 'error' | 'ignored'}}
+
+    ids_only: leave out game titles and matched names (a CI report is downloadable by anyone from a public
+    repository, and the title list itself is kept secret; the title IDs are published in the data anyway)."""
+    def name_of(tid):
+        return "(hidden)" if ids_only else by_id[tid].title.replace("|", "/")
+
     n = len(entries)
     lines = ["# Popularity build report", "", "Generated: %s" % generated_at, "",
              "Titles: %d, with a score: %d (%.1f%%)" % (n, len(records), 100.0 * len(records) / n if n else 0), ""]
@@ -34,10 +40,10 @@ def render(entries, results, records, providers, generated_at, skipped=None):
         lines += ["| titleId | title | source | matched to | conf | ambiguous |", "|---|---|---|---|---:|---|"]
         for tid, p, s in low:
             lines.append("| %s | %s | %s | %s | %.2f | %s |" % (
-                tid, by_id[tid].title.replace("|", "/"), p, str(s.external_name).replace("|", "/"),
+                tid, name_of(tid), p, "(hidden)" if ids_only else str(s.external_name).replace("|", "/"),
                 s.confidence, "yes" if s.ambiguous else ""))
     else:
         lines.append("None.")
     lines += ["", "## Unmatched in every source (%d)" % len(unmatched), ""]
-    lines += ["- %s  %s" % (t, by_id[t].title) for t in unmatched] or ["None."]
+    lines += ["- %s  %s" % (t, "" if ids_only else by_id[t].title) for t in unmatched] or ["None."]
     return "\n".join(lines) + "\n"

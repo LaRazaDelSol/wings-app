@@ -10,6 +10,7 @@ src/audio/mixer.cpp
 src/audio/wav.cpp
 src/core/input.cpp
 src/core/touch.cpp
+src/core/version.cpp
 src/core/save_file.cpp
 src/gfx/draw_list.cpp
 src/gfx/font.cpp

@@ -9,19 +9,22 @@ set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
 title_id=$(python3 -c 'import json;print(json.load(open("sce_sys/param.json"))["titleId"])')
-image=dist/$title_id.ffpkg
+# WINGS_DIST: the folder holding the package (default dist; tools/mark-release-wsl.sh points it at build-out).
+dist=${WINGS_DIST:-dist}
+image=$dist/$title_id.ffpkg
 runner=$(bash tools/setup-packaging-dependencies.sh ffpkg)
 mkdir -p build
 temporary=$(mktemp -d "$root/build/verify-package.XXXXXX")
 trap 'rm -rf -- "$temporary" "$temporary.log"' EXIT
 "$runner" extract "$image" "$temporary" >"$temporary.log"
-python3 - "$temporary" "$title_id" <<'PY'
+python3 - "$temporary" "$title_id" "$dist" <<'PY'
 import hashlib, json, struct, sys
 from pathlib import Path
 
 extracted = Path(sys.argv[1])
 title_id = sys.argv[2]
-staged = Path('dist') / title_id
+dist = Path(sys.argv[3])
+staged = dist / title_id
 
 
 def digest(path):
@@ -52,6 +55,11 @@ for name in ('inter-display-light', 'inter-regular', 'inter-medium', 'inter-semi
     assert (extracted / 'assets/fonts' / f'{name}.huifont').is_file(), f'missing font {name}'
 assert (extracted / 'assets/fonts/Inter-LICENSE.txt').is_file(), 'Inter licence must ship with the fonts'
 assert (extracted / 'sce_module/libc.prx').is_file(), 'missing runtime libc.prx'
+# The build stamp (tools/wings-stamp.py): which build this is, and whether it is a test or a release package.
+import re as _stamp_re
+_stamp = _stamp_re.fullmatch(r'\{"build":"(\d{8}-\d{6})","channel":"(test   |release)"\}\n',
+                             (extracted / 'assets/build-info.json').read_text())
+assert _stamp, 'assets/build-info.json is missing or is not a valid build stamp'
 
 # Nothing of Orbit's backend may ride along.
 assert not (extracted / 'orbit').exists(), 'an orbit/ payload directory is in the package'
@@ -80,7 +88,8 @@ assert b'127.0.0.1:6970' in eboot or b'6970' in eboot, 'eboot.bin does not menti
 
 record = {'titleId': title_id, 'contentId': param['contentId'],
           'contentVersion': param['contentVersion'],
-          'imageSha256': digest(Path('dist') / f'{title_id}.ffpkg'),
+          'build': _stamp.group(1), 'channel': _stamp.group(2).strip(),
+          'imageSha256': digest(dist / f'{title_id}.ffpkg'),
           'appSha256': digest(extracted / 'eboot.bin'), 'files': len(folder),
           'caBundleCertificates': certificates}
 Path('build/package-verification.json').write_text(json.dumps(record, indent=2) + '\n')

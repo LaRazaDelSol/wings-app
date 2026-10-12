@@ -9,6 +9,7 @@
 #pragma once
 
 #include "orbit/after_download_mode.hpp"
+#include "orbit/art_sources.hpp"
 #include "orbit/pegasus_start_mode.hpp"
 #include "orbit/tile_details.hpp"
 
@@ -39,6 +40,13 @@ struct WingsLocalPrefs
     PegasusStartMode pegasus_start = PegasusStartMode::ask;
     // What Wings does when a download finishes: ask ShadowMount to scan (default) or nothing.
     AfterDownload after_download = AfterDownload::scan;
+    // Look for a newer Wings release when the app starts (wings_update.hpp). On by default; files from before
+    // this choice have no key and load the default.
+    bool update_check = true;
+    // Where cover icons and the 16:9 game-page art come from (art_sources.hpp). Defaults: the catalogue's own
+    // covers, and every art source.
+    IconSource icon_source = IconSource::catalogue;
+    HeroSource hero_source = HeroSource::all;
 
     bool operator==(const WingsLocalPrefs &other) const;
 };

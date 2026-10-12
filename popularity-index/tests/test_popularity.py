@@ -316,6 +316,12 @@ class BuildTests(unittest.TestCase):
         self.assertIn("| steam | 2 | 1 | 1 | 0 |", md)
         self.assertIn("Low confidence (1)", md)
         self.assertIn("PPSA3  C", md)
+        # A public CI report carries IDs only: no game title and no matched name.
+        hidden = report.render(entries, results, {}, ["steam"], "now", ids_only=True)
+        self.assertIn("PPSA3", hidden)
+        self.assertIn("PPSA2", hidden)
+        for text in ("Bee", "  C", "| B |"):
+            self.assertNotIn(text, hidden)
 
 
 STEAM = "https://cdn.cloudflare.steamstatic.com/steam/apps/1/library_hero.jpg"

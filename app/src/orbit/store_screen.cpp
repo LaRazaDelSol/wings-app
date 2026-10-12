@@ -1750,10 +1750,22 @@ Intent StoreScreen::update(const InputFrame &input, float dt, Feedback &feedback
         if (page_.loaded && !header_.hero_resolved && pop_index_ != nullptr)
         {
             header_.hero_resolved = true;
-            const std::string url = pop_index_->hero(page_.title_ids);
+            // Settings > Art sources: every source, or only the PS5's own background (Prosperopatches).
+            const HeroSource source = prefs_source_ != nullptr ? prefs_source_->hero_source : HeroSource::all;
+            std::string url;
+            for (const std::string &id : page_.title_ids)
+            {
+                const PopRecord *record = pop_index_->find(id);
+                if (record != nullptr && !record->hero.empty() && hero_url_allowed(record->hero, source))
+                {
+                    url = record->hero;
+                    break;
+                }
+            }
             if (!url.empty() && hero_urls().set(page_.art_key, url))
                 header_.hero_url = url;
-            const std::string low = pop_index_->hero_low(page_.title_ids);
+            // The small stand-in is IGDB's: not used when only Prosperopatches art is wanted.
+            const std::string low = source == HeroSource::all ? pop_index_->hero_low(page_.title_ids) : std::string();
             if (!low.empty() && hero_urls().set_low(page_.art_key, low))
                 header_.hero_low_url = low;
         }

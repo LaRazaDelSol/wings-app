@@ -50,12 +50,18 @@ bool PopularityIndex::parse(std::string_view text, PopularityIndex *out, std::st
         return false;
     };
     if (text.size() > kPopularityMaxBytes)
-        return fail("the file is larger than 400 KB");
+        return fail("the file is too large");
     json::Value root;
     std::string why;
     if (!json::parse(text, &root, &why) || !root.is_object())
         return fail("the file is not valid JSON");
-    if (!root["schemaVersion"].is_number() || root["schemaVersion"].as_int(0) != 1)
+    if (!root["schemaVersion"].is_number())
+        return fail("unsupported data version");
+    // A newer format goes to a new address and old apps keep the old file; if a source still serves one,
+    // the way out is a newer Wings.
+    if (root["schemaVersion"].as_int(0) > 1)
+        return fail(tr("this data needs a newer Wings (Settings > Wings > Updates)"));
+    if (root["schemaVersion"].as_int(0) != 1)
         return fail("unsupported data version");
     const json::Value &titles = root["titles"];
     if (!titles.is_object())
@@ -141,14 +147,6 @@ std::string PopularityIndex::hero_low(const std::vector<std::string> &title_ids)
             return r->hero_low;
     }
     return {};
-}
-
-bool PopularityIndex::has_hero() const
-{
-    for (const auto &entry : records_)
-        if (!entry.second.hero.empty())
-            return true;
-    return false;
 }
 
 bool valid_popularity_url(std::string_view url)
@@ -488,7 +486,7 @@ void PopularityService::run(bool force, std::string url)
     PopularityStatus status;
     status.busy = true;
     bool cache_ok = false;
-    bool cache_has_hero = false; // a saved copy without any hero art predates it: refreshed at once
+    bool cache_current = false; // the saved copy was fetched by this very build of the app
     std::int64_t fetched = 0;
     // 1. The saved copy. Missing or damaged is fine.
     for (const std::string &path : config_.cache_paths)
@@ -502,9 +500,20 @@ void PopularityService::run(bool force, std::string url)
         const std::size_t nl = d.payload.find('\n');
         if (nl == std::string::npos)
             continue;
+        // "fetched=<unix>\napp=<build tag>\n<file>"; a copy from before the tag has no app line.
+        std::size_t body_at = nl + 1;
+        std::string saved_tag;
+        if (d.payload.compare(body_at, 4, "app=") == 0)
+        {
+            const std::size_t nl2 = d.payload.find('\n', body_at);
+            if (nl2 == std::string::npos)
+                continue;
+            saved_tag = d.payload.substr(body_at + 4, nl2 - body_at - 4);
+            body_at = nl2 + 1;
+        }
         auto index = std::make_shared<PopularityIndex>();
         std::string why;
-        if (!PopularityIndex::parse(std::string_view(d.payload).substr(nl + 1), index.get(), &why))
+        if (!PopularityIndex::parse(std::string_view(d.payload).substr(body_at), index.get(), &why))
             continue;
         fetched = std::atoll(d.payload.substr(8, nl - 8).c_str());
         status.updated = fetched;
@@ -512,11 +521,11 @@ void PopularityService::run(bool force, std::string url)
         status.message = tr("Using the saved copy");
         hub_.set_index(index);
         cache_ok = true;
-        cache_has_hero = index->has_hero();
+        cache_current = saved_tag == config_.app_tag;
         break;
     }
     const std::int64_t now = config_.now();
-    const bool fresh = cache_ok && cache_has_hero && fetched <= now && now - fetched < config_.ttl_s;
+    const bool fresh = cache_ok && cache_current && fetched <= now && now - fetched < config_.ttl_s;
     if (fresh && !force)
     {
         status.busy = false;
@@ -545,7 +554,8 @@ void PopularityService::run(bool force, std::string url)
             else
                 write_everywhere(config_.cache_paths,
                                  hui::save::encode(hui::save::Kind::stats, 1,
-                                                   "fetched=" + std::to_string(now) + "\n" + doc.body),
+                                                   "fetched=" + std::to_string(now) + "\napp=" + config_.app_tag + "\n" +
+                                                       doc.body),
                                  nullptr);
         }
     }

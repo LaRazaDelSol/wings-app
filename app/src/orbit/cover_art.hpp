@@ -18,6 +18,7 @@
 #include "orbit/thread.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -25,6 +26,8 @@
 
 namespace orbit
 {
+
+class PopularityIndex;
 
 // The sentence Settings shows beside the DNS-over-HTTPS switch.
 inline constexpr const char *kDohPrivacySentence =
@@ -44,10 +47,18 @@ class PosterIndex
 
     std::size_t size() const;
 
+    // Frame thread. `prospero`: covers resolve to the title's Prosperopatches icon where the popularity data
+    // has one (art_sources.hpp); every other title keeps its catalogue cover. Returns true when what covers
+    // resolve to changed, so the caller drops the covers it holds and they are asked for again.
+    bool set_icon_source(bool prospero, std::shared_ptr<const PopularityIndex> index);
+
   private:
     mutable Mutex mutex_;
     std::unordered_map<std::string, std::string> urls_;
+    std::unordered_map<std::string, std::string> title_ids_; // package id -> title id (when it has one)
     std::uint64_t serial_ = ~0ull;
+    bool prospero_active_ = false; // the Prosperopatches source is chosen and the data to use it is there
+    std::shared_ptr<const PopularityIndex> index_;
 };
 
 struct CoverArtStatus

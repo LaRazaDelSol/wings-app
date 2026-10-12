@@ -3,7 +3,7 @@
 //
 // The data is a small JSON file Wings fetches over https (docs/research/popularity.md):
 //   {schemaVersion:1, generatedAt, sources[], attribution{}, titles{titleId:{score, rating?,
-//    ratingCount?, sources[], confidence, fetchedAt}}}
+//    ratingCount?, sources[], confidence, hero?, heroLow?}}}
 // On by default (the player can turn it off). Nothing here touches the network on its own: PopularityService asks a
 // DocFetcher (main.cpp wires it to the cover-art HTTPS client) and only when the Wings
 // preference is on. Everything else is platform neutral and tested on the host.
@@ -57,8 +57,6 @@ class PopularityIndex
     std::string hero(const std::vector<std::string> &title_ids) const;
     // The same for the small "heroLow" image.
     std::string hero_low(const std::vector<std::string> &title_ids) const;
-    // Any record carries a hero URL (a saved copy without any predates the art and is refreshed).
-    bool has_hero() const;
     std::size_t size() const { return records_.size(); }
     const std::string &generated_at() const { return generated_at_; }
     const std::vector<std::string> &attribution() const { return attribution_; } // one line per source
@@ -182,6 +180,10 @@ struct PopularityServiceConfig
 {
     std::vector<std::string> cache_paths; // first writable wins; the saved copy of the file
     int ttl_s = 24 * 3600;                // no ETag support in the client: re-fetch only when older
+    // Which build of the app this is ("00.001.001+20261012-203105"). The saved copy carries the tag of the build
+    // that fetched it; a copy from another build (or from before the tag existed) is fetched again at the first
+    // start, whatever its age, so updating the app always updates the data too. Empty: not asked (tests, preview).
+    std::string app_tag;
     std::function<std::int64_t()> now;    // unix seconds (default: the system clock)
 };
 

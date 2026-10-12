@@ -74,6 +74,9 @@ class ArtCache
     bool idle();
     // Releases every texture (before the GL context goes away).
     void clear();
+    // Frame thread: forgets every cover (not the game-page backgrounds); they are asked for again as they are
+    // drawn. For when what the covers resolve to changed (Settings > Art sources).
+    void reset_covers();
     // Frame thread: images that failed are asked for again the next time they are
     // drawn instead of after limits.retry_failed (Settings turned something on,
     // or the player asked to retry).

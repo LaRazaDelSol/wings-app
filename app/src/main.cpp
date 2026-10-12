@@ -18,6 +18,7 @@
 #include "orbit/pegasus_manager.hpp"
 #include "orbit/popularity.hpp"
 #include "orbit/steam_reviews.hpp"
+#include "orbit/wings_update.hpp"
 #include "orbit/prefs.hpp"
 #include "orbit/diagnostics.hpp"
 #include "orbit/gl_textures.hpp"
@@ -425,8 +426,13 @@ int main()
     // Popularity data: off unless the Wings preference is on; then a background fetch (never
     // blocks the frame). The saved copy and the local download counter live beside the art cache.
     ConsoleDocFetcher doc_fetcher(art_service);
+    // Which Wings this is (param.json) and which build of it (assets/build-info.json, written by the build).
+    // Saved data is tagged with the build, so a new build fetches fresh data on its first start.
+    const std::string app_content_version = read_content_version("/app0/sce_sys/param.json");
+    const BuildInfo app_build = read_build_info(std::string(kAssets) + "/build-info.json");
     orbit::PopularityServiceConfig pop_config;
     pop_config.cache_paths = {std::string(kWingsDir) + "/popularity.v1"};
+    pop_config.app_tag = build_tag(app_content_version, app_build);
     orbit::PopularityService popularity(orbit::popularity_hub(), doc_fetcher, pop_config);
     orbit::popularity_hub().apply_hook = [&popularity](bool on, const std::string &url)
     { popularity.apply(on, url); };
@@ -441,6 +447,30 @@ int main()
         pm.cache_paths = {std::string(kWingsDir) + "/pegasus_releases.v1", "/data/wings/pegasus_releases.v1"};
         orbit::pegasus_manager().attach(std::move(pm));
     }
+    // A newer Wings: a look at the project's latest release once the network is ready (wings_update.hpp).
+    {
+        orbit::WingsUpdateConfig wu;
+        wu.docs = &doc_fetcher;
+        wu.ready = [&art_service](std::string *why)
+        {
+            const wings::art::ServiceState state = art_service.state();
+            if (state.phase == wings::art::Phase::ready)
+                return true;
+            *why = state.detail.empty() ? std::string("The network is off. Turn on cover downloads first.")
+                                        : state.detail;
+            return false;
+        };
+        wu.cache_paths = {std::string(kWingsDir) + "/wings_update.v1", "/data/wings/wings_update.v1"};
+        wu.running = app_content_version;
+        orbit::wings_update().attach(std::move(wu));
+    }
+    struct UpdateStop
+    {
+        ~UpdateStop()
+        {
+            orbit::wings_update().wait_idle();
+        }
+    } update_stop;
     // The worker uses the downloader above: stop it before that goes away.
     struct PegasusStop
     {
@@ -458,6 +488,7 @@ int main()
     {
         orbit::WingsLocalPrefs local;
         orbit::load_local_prefs(wings_prefs_paths(), &local);
+        orbit::wings_update().set_enabled(local.update_check);
         popularity.apply(local.popularity_enabled, local.popularity_url);
     }
 
@@ -479,6 +510,7 @@ int main()
 
     orbit::Context context(type, fonts, store, art);
     context.cover_art = &cover_art;
+    context.posters = &posters;
     context.catalogue_paths = catalogue_paths();
     context.wings_prefs_paths = wings_prefs_paths();
     // Files tab diagnostics (request ids, drops, errors) go to the title log.
@@ -487,7 +519,8 @@ int main()
     { art_source.prefetch_keys(keys, orbit::ArtKind::cover); };
     context.mark = mark;
     context.loader_mark = loader_mark;
-    context.app_version = read_content_version("/app0/sce_sys/param.json");
+    context.app_version = app_content_version;
+    context.app_label = version_label(app_content_version, app_build);
     context.open_pegasus_ui = []
     { return sceSystemServiceLaunchWebBrowser(kBrowserUrl, nullptr) == 0; };
     // ShadowMount's local API (loopback only): after a download finishes, Wings asks it to scan.
@@ -514,7 +547,9 @@ int main()
     orbit::App app(context);
     orbit::Frame frame;
     frame.glass_texture = renderer.glass_texture();
-    sys::log("[WINGS] ready version=%s", context.app_version.c_str());
+    sys::log("[WINGS] ready version=%s build=%s channel=%s", context.app_version.c_str(),
+             app_build.known ? app_build.build.c_str() : "unknown",
+             app_build.known ? (app_build.release ? "release" : "test") : "unknown");
 
     // The diagnostics file: at start, 10 s later (Pegasus and the catalogue have
     // answered by then), then every minute and whenever the player changes a
@@ -528,7 +563,8 @@ int main()
         const wings::art::ServiceState st = art_service.state();
         const wings::art::ArtStats stats = art_service.stats();
         orbit::DiagnosticsInput in;
-        in.app_version = context.app_version;
+        in.app_version = context.app_label.empty() ? context.app_version : context.app_label;
+        in.app_build = app_build.known ? app_build.build + (app_build.release ? " (release)" : " (test)") : std::string();
         in.title_id = kTitleId;
         in.unix_time = wall_clock_seconds();
         in.uptime_s = static_cast<double>(now_us - start_us) / 1e6;

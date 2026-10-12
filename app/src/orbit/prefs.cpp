@@ -52,7 +52,8 @@ bool WingsLocalPrefs::operator==(const WingsLocalPrefs &other) const
            prefer_debrid == other.prefer_debrid &&
            popularity_enabled == other.popularity_enabled && popularity_url == other.popularity_url &&
            tile_details == other.tile_details && pegasus_start == other.pegasus_start &&
-           after_download == other.after_download;
+           after_download == other.after_download && update_check == other.update_check &&
+           icon_source == other.icon_source && hero_source == other.hero_source;
 }
 
 bool valid_firmware(std::string_view value)
@@ -82,6 +83,9 @@ std::string encode_local_prefs(const WingsLocalPrefs &prefs)
     out += std::string("tile_details=") + tile_details_key(prefs.tile_details) + "\n";
     out += std::string("pegasus_start=") + pegasus_start_mode_key(prefs.pegasus_start) + "\n";
     out += std::string("after_download=") + after_download_key(prefs.after_download) + "\n";
+    out += std::string("update_check=") + (prefs.update_check ? "1" : "0") + "\n";
+    out += std::string("icon_source=") + icon_source_key(prefs.icon_source) + "\n";
+    out += std::string("hero_source=") + hero_source_key(prefs.hero_source) + "\n";
     return out;
 }
 
@@ -121,6 +125,12 @@ bool decode_local_prefs(std::string_view payload, WingsLocalPrefs *out)
             parse_pegasus_start_mode(value, &prefs.pegasus_start);
         else if (key == "after_download")
             parse_after_download(value, &prefs.after_download);
+        else if (key == "update_check")
+            prefs.update_check = value != "0";
+        else if (key == "icon_source")
+            parse_icon_source(value, &prefs.icon_source);
+        else if (key == "hero_source")
+            parse_hero_source(value, &prefs.hero_source);
     }
     *out = prefs;
     return true;

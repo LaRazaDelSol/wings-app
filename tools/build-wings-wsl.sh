@@ -5,6 +5,9 @@
 #   wsl -d Ubuntu -u root -- bash -lc 'ln -sfn "/path/to/this/repository" /root/wb; bash /root/wb/tools/build-wings-wsl.sh'
 # Env: WORK (ext4 build dir), OUT (artifact dir), JOBS, MEM,
 #      WITH_PREVIEW=1 (default) renders the preview pictures, WITH_TEST=1 runs `make test`.
+# Every build is stamped (assets/build-info.json): WINGS_BUILD_ID (default: now, UTC) and WINGS_CHANNEL
+# (test by default; release only for a package meant to be published). A test package becomes a release
+# one later, without compiling again, with tools/mark-release-wsl.sh.
 set -euo pipefail
 WING="${WING:-/root/wb}"
 SRC="${SRC:-$WING}"
@@ -12,6 +15,9 @@ WORK="${WORK:-/root/build/wings}"
 OUT="${OUT:-$SRC/build-out}"
 PREVIEW_OUT="${PREVIEW_OUT:-$SRC/app/preview-out}"
 JOBS="${JOBS:-4}"; MEM="${MEM:-8g}"
+WINGS_BUILD_ID="${WINGS_BUILD_ID:-$(date -u +%Y%m%d-%H%M%S)}"
+WINGS_CHANNEL="${WINGS_CHANNEL:-test}"
+[[ $WINGS_CHANNEL == test || $WINGS_CHANNEL == release ]] || { echo "WINGS_CHANNEL must be test or release" >&2; exit 2; }
 IMAGE="${IMAGE:-wings-app-build-restyle2:0.1}"
 t0=$(date +%s); lap(){ echo "== [$(( $(date +%s)-t0 ))s] $*"; }
 
@@ -44,17 +50,20 @@ cd "$WORK"
 lap "docker build $IMAGE"
 docker build -t "$IMAGE" app
 
-lap "make ffpkg"
+lap "make ffpkg (build $WINGS_BUILD_ID, $WINGS_CHANNEL)"
 docker run --rm --cpus "$JOBS" --memory "$MEM" -v "$WORK:/work" -w /work/app -e BUILD_JOBS="$JOBS" \
-  "$IMAGE" make ffpkg
+  -e WINGS_BUILD_ID="$WINGS_BUILD_ID" -e WINGS_CHANNEL="$WINGS_CHANNEL" "$IMAGE" make ffpkg
 
 lap "verify-package"
 docker run --rm --cpus "$JOBS" --memory "$MEM" -v "$WORK:/work" -w /work/app "$IMAGE" \
   bash tools/verify-package.sh | tee "$WORK/app/dist/verify-package.log"
 
 lap "copy artifacts"
+# Nothing from an earlier build may stay next to this one (a stale checksum list or test log misleads).
+rm -rf "$OUT"/PPSA* "$OUT"/SHA256SUMS.txt "$OUT"/*.log "$OUT"/package-verification.json
 cp -a "$WORK/app/dist/." "$OUT/"
 cp -a "$WORK/app/build/package-verification.json" "$OUT/" 2>/dev/null || true
+(cd "$OUT" && sha256sum PPSA*.ffpkg PPSA*.zip > SHA256SUMS.txt)
 ls -la "$OUT"
 
 if [ "${WITH_TEST:-0}" = 1 ]; then

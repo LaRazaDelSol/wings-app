@@ -25,6 +25,7 @@ struct DiagnosticsInput
 {
     // Identity
     std::string app_version;
+    std::string app_build; // "20261012-203105 (test)"; empty when the package carries no stamp
     std::string title_id;
     // Time
     std::int64_t unix_time = 0; // 0 when the clock cannot be read

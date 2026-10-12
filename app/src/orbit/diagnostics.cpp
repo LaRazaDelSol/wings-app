@@ -117,6 +117,8 @@ std::string format_diagnostics(const DiagnosticsInput &in)
     line("");
     line("App");
     line("  version:         " + (in.app_version.empty() ? std::string("unknown") : in.app_version));
+    if (!in.app_build.empty())
+        line("  build:           " + in.app_build);
     line("  title id:        " + (in.title_id.empty() ? std::string("unknown") : in.title_id));
     line("  uptime:          " + std::to_string(static_cast<long long>(in.uptime_s)) + " s");
     line("");

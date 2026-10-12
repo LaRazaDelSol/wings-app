@@ -260,6 +260,10 @@ for catalogue in "$root"/../i18n/*.json; do
     [[ $(basename "$catalogue") == en.json ]] || cp "$catalogue" "$app/assets/i18n/"
 done
 shopt -u nullglob
+# Wings: every build says which build it is (assets/build-info.json): the time it was made and its
+# channel (test unless WINGS_CHANNEL=release). tools/mark-release-wsl.sh turns a test package into a
+# release one later without compiling; see tools/wings-stamp.py.
+python3 "$root/tools/wings-stamp.py" write "$app/assets/build-info.json"
 # Directory listing returns nothing under /app0 on the console, so each
 # audio folder carries an index of its files (read by save::list_files).
 for dir in "$app/assets/audio/music" "$app"/assets/audio/sfx/*/; do

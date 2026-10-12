@@ -9,6 +9,7 @@
 #include "orbit/mark.hpp"
 #include "orbit/screens.hpp"
 #include "orbit/i18n.hpp"
+#include "orbit/wings_update.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -149,6 +150,29 @@ void App::update(const InputFrame &input, float dt, Feedback &feedback)
     after_install_.set_mode(settings_.local_prefs().after_download);
     after_install_.update(static_cast<double>(ctx_.clock), ctx_.store.state().jobs,
                           ctx_.store.state().have_queue);
+    // A newer Wings: ask GitHub once the network is ready (at most every 6 hours; the service decides),
+    // and say so once per start. Checked every two seconds, not every frame.
+    update_poll_ += dt;
+    if (update_poll_ >= 2.0f)
+    {
+        update_poll_ = 0.0f;
+        wings_update().auto_check();
+        if (!update_announced_)
+        {
+            const WingsUpdateStatus up = wings_update().status();
+            if (up.attached && up.enabled && up.advice == WingsAdvice::newer)
+            {
+                update_announced_ = true;
+                show_toast(wings_update_toast(up), 8.0f);
+                feedback.play(hui::audio::Cue::notify);
+            }
+        }
+    }
+    // The cover icon source (Settings > Art sources): covers are asked for again when what they resolve to changes.
+    if (ctx_.posters != nullptr &&
+        ctx_.posters->set_icon_source(settings_.local_prefs().icon_source == IconSource::prospero,
+                                      popularity_hub().index()))
+        ctx_.art.reset_covers();
     // The one wash: aimed at the tab's hue, then at the section the screen reports.
     wash_.retarget(tab_, screen().section_accent());
     wash_.update(dt);

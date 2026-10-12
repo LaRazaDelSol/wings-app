@@ -13,6 +13,7 @@
 #include "orbit/pegasus_manager.hpp"
 #include "orbit/pegasus_version.hpp"
 #include "orbit/title_export.hpp"
+#include "orbit/wings_update.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -271,6 +272,7 @@ SettingsScreen::SettingsScreen(Context &context) : ListScreen(context)
     {
         load_local_prefs(ctx_.wings_prefs_paths, &prefs_);
         popularity_hub().apply_prefs(prefs_.popularity_enabled, prefs_.popularity_url);
+        wings_update().set_enabled(prefs_.update_check);
     }
 }
 
@@ -279,6 +281,7 @@ void SettingsScreen::store_local_prefs()
     if (!ctx_.wings_prefs_paths.empty())
         save_local_prefs(ctx_.wings_prefs_paths, prefs_);
     popularity_hub().apply_prefs(prefs_.popularity_enabled, prefs_.popularity_url);
+    wings_update().set_enabled(prefs_.update_check);
 }
 
 std::vector<ListScreen::Row> SettingsScreen::build(std::vector<Act> *acts) const
@@ -356,6 +359,19 @@ void SettingsScreen::build_wings(std::vector<Row> &out, std::vector<Act> *acts) 
         add("Retry failed covers", tr("Ask again for covers that could not be downloaded"),
             std::string(), Act::retry_failed);
     }
+    // Art sources: where cover icons and the 16:9 game-page art come from (art_sources.hpp).
+    begin("Art sources", theme::accent_cover_art);
+    add("Cover icons from",
+        tr("Where the covers on Store tiles come from. Prosperopatches uses each title's PS5 icon (needs Popularity "
+           "data on); a title it has no art for keeps its usual cover."),
+        prefs_.icon_source == IconSource::prospero ? std::string(tr("Prosperopatches")) : std::string(tr("Catalogue")),
+        Act::icon_source);
+    add("16:9 game art from",
+        tr("The wide picture behind a game's page. All sources: Prosperopatches first, then IGDB and Steam. "
+           "Prosperopatches only: the PS5's own background and nothing else (needs Popularity data on)."),
+        prefs_.hero_source == HeroSource::prospero ? std::string(tr("Prosperopatches only"))
+                                                   : std::string(tr("All sources")),
+        Act::hero_source);
     // Store grid defaults.
     begin("Store grid", theme::accent_store_grid);
     add("Reset Store grid", tr("Back to A to Z with no filters. Your favourites stay."),
@@ -407,11 +423,24 @@ void SettingsScreen::build_wings(std::vector<Row> &out, std::vector<Act> *acts) 
         prefs_.after_download == AfterDownload::scan ? std::string(tr("Ask ShadowMount to scan"))
                                                      : std::string(tr("Do nothing")),
         Act::after_download);
+    // Updates: a read-only look at the project's latest release (wings_update.hpp). Wings never installs itself.
+    begin("Updates", theme::accent_about);
+    add("Check for Wings updates",
+        tr("When Wings starts it asks GitHub if a newer release exists (needs Cover art on). It only tells you: "
+           "it never downloads or installs anything."),
+        prefs_.update_check ? std::string(tr("On")) : std::string(tr("Off")), Act::update_check);
+    {
+        const WingsUpdateStatus up = wings_update().status();
+        const WingsUpdateText words = wings_update_text(up);
+        add("Wings update", words.detail, words.value, Act::wings_update, !up.attached);
+    }
     // Diagnostics and About: what Wings knows about itself and about Pegasus DL (read-only).
     begin("About", theme::accent_about);
     const bool known = state.online() && state.have_info;
-    add("Wings", tr("This app"), ctx_.app_version.empty() ? std::string("-") : ctx_.app_version,
-        Act::none);
+    {
+        const std::string &mine = ctx_.app_label.empty() ? ctx_.app_version : ctx_.app_label;
+        add("Wings", tr("This app"), mine.empty() ? std::string("-") : mine, Act::none);
+    }
     add("Pegasus DL", state.endpoint,
         known ? state.info.version : std::string(tr("Not connected")), Act::none);
     add("Compatibility", tr("How well this version of Wings knows that Pegasus DL"),
@@ -760,6 +789,53 @@ void SettingsScreen::on_confirm(int row, Feedback &feedback, Intent &intent)
         prefs_.tile_details = next_tile_details(prefs_.tile_details);
         store_local_prefs();
         break;
+    case Act::icon_source:
+        prefs_.icon_source = prefs_.icon_source == IconSource::catalogue ? IconSource::prospero : IconSource::catalogue;
+        store_local_prefs();
+        intent.toast = prefs_.icon_source == IconSource::prospero ? tr("Covers now come from Prosperopatches")
+                                                                  : tr("Covers now come from the catalogue");
+        break;
+    case Act::hero_source:
+        prefs_.hero_source = prefs_.hero_source == HeroSource::all ? HeroSource::prospero : HeroSource::all;
+        store_local_prefs();
+        intent.toast = prefs_.hero_source == HeroSource::prospero ? tr("Game pages use Prosperopatches art only")
+                                                                  : tr("Game pages use every art source");
+        break;
+    case Act::update_check:
+        prefs_.update_check = !prefs_.update_check;
+        store_local_prefs();
+        intent.toast = prefs_.update_check ? tr("Wings will check for updates when it starts")
+                                           : tr("Wings will not check for updates");
+        break;
+    case Act::wings_update:
+    {
+        const WingsUpdateStatus up = wings_update().status();
+        if (!up.attached || up.busy)
+            break;
+        if (up.advice == WingsAdvice::newer)
+        {
+            // How to install it by hand: a scrolling list (a confirm dialog would cut the steps off).
+            const WingsUpdateGuide guide = wings_update_guide(up);
+            std::vector<ListItem> items;
+            for (const WingsUpdateStep &step : guide.steps)
+            {
+                ListItem item;
+                item.label = step.label;
+                item.detail = step.detail;
+                items.push_back(std::move(item));
+            }
+            list_for_ = ListFor::wings_update;
+            list_.open(guide.title, guide.subtitle, std::move(items), ListDialog::Mode::single);
+            feedback.play(hui::audio::Cue::modal_open);
+        }
+        else
+        {
+            // The row says why when the network is not ready.
+            intent.toast = wings_update().check_now() ? tr("Checking for a newer Wings...")
+                                                      : tr("Could not check for updates");
+        }
+        break;
+    }
     case Act::pegasus_startup:
         // Ask -> Auto-load -> I load it myself -> Ask.
         prefs_.pegasus_start = prefs_.pegasus_start == PegasusStartMode::ask        ? PegasusStartMode::autoload

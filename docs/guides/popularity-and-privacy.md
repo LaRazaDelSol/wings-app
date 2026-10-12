@@ -18,14 +18,17 @@ There is also a local counter of what *you* queued from Wings (the "my downloads
 |---|---|---|
 | Pegasus DL | `127.0.0.1:6970`, on the console | Nothing leaves the console. |
 | Cover art (on by default) | DNS-over-HTTPS to Cloudflare `1.1.1.1` and Google `8.8.8.8`; then HTTPS to the cover servers in your catalogue | Cloudflare and Google see the host names of the cover servers. Cover servers see your IP address and the image you asked for. |
-| Popularity (on by default) | HTTPS GET of one file from `larazadelsol.github.io` (GitHub Pages), at most once per 24 hours | GitHub sees your IP address. Wings sends no identifier beyond the User-Agent `WingsTV/0.1`. The file holds no user data. |
+| Popularity (on by default) | HTTPS GET of one file from `larazadelsol.github.io` (GitHub Pages), at most once per 24 hours and once after Wings is updated | GitHub sees your IP address. Wings sends no identifier beyond the User-Agent `WingsTV/0.1`. The file holds no user data. |
+| Update check (on by default) | HTTPS GET of the latest release of this project from `api.github.com`, when Wings starts and then at most every 6 hours | GitHub sees your IP address and the same User-Agent. Nothing about you or your games. See [Updating Wings](updating.md). |
 
-Popularity uses the same HTTPS client as cover art and, as Settings says, needs cover art (DNS-over-HTTPS) on. With cover art off, Popularity does not fetch and Wings makes no internet connection of its own.
+Popularity and the update check use the same HTTPS client as cover art and, as Settings says, need cover art (DNS-over-HTTPS) on. With cover art off, neither fetches and Wings makes no internet connection of its own.
 
 ## Turning it off
 
 - Settings, **Wings** group, **Download store covers (DNS-over-HTTPS)**: Off. Covers already downloaded still show.
 - Settings, **Wings** group, **Popularity data**: Off.
+- Settings, **Wings** group, **Updates** > **Check for Wings updates**: Off.
+- Settings, **Wings** group, **Art sources**: where art comes from. **Cover icons from** is *Catalogue* by default (the covers your catalogue links to); *Prosperopatches* uses each title's PS5 icon from `cdn.prosperopatches.com` instead, for titles the popularity data lists there (the rest keep their catalogue cover). **16:9 game art from** is *All sources* by default (Prosperopatches first, then IGDB, then Steam); *Prosperopatches only* uses just the PS5's own background and nothing from IGDB or Steam. Both need Popularity data on.
 - **Popularity source URL** can point at another `https://` file, or stay Default.
 - **Clear art cache** deletes downloaded covers.
 

@@ -4,7 +4,9 @@
 #include "orbit/cover_art.hpp"
 
 #include "core/save_file.hpp"
+#include "orbit/art_sources.hpp"
 #include "orbit/game_header.hpp"
+#include "orbit/popularity.hpp"
 
 namespace orbit
 {
@@ -18,15 +20,21 @@ bool PosterIndex::sync(std::uint64_t serial, const std::vector<Package> &package
     }
     // Built outside the lock: the art worker is never held up by 3,000 inserts.
     std::unordered_map<std::string, std::string> next;
+    std::unordered_map<std::string, std::string> next_titles;
     next.reserve(packages.size());
     for (const Package &package : packages)
     {
-        if (package.id.empty() || package.poster_url.compare(0, 8, "https://") != 0)
+        if (package.id.empty())
+            continue;
+        if (!package.title_id.empty())
+            next_titles.emplace(package.id, package.title_id);
+        if (package.poster_url.compare(0, 8, "https://") != 0)
             continue;
         next.emplace(package.id, package.poster_url);
     }
     Lock lock(mutex_);
     urls_.swap(next);
+    title_ids_.swap(next_titles);
     serial_ = serial;
     return true;
 }
@@ -43,8 +51,33 @@ std::string PosterIndex::resolve(std::string_view key, ArtKind kind) const
         return hero_urls().find_low(key);
     const std::string id(key.substr(4));
     Lock lock(mutex_);
+    if (prospero_active_)
+    {
+        // The icon sits next to the title's 16:9 picture in the popularity data.
+        const auto title = title_ids_.find(id);
+        if (title != title_ids_.end())
+        {
+            const PopRecord *record = index_->find(title->second);
+            if (record != nullptr)
+            {
+                const std::string icon = prospero_icon_url(record->hero);
+                if (!icon.empty())
+                    return icon;
+            }
+        }
+    }
     const auto found = urls_.find(id);
     return found == urls_.end() ? std::string() : found->second;
+}
+
+bool PosterIndex::set_icon_source(bool prospero, std::shared_ptr<const PopularityIndex> index)
+{
+    Lock lock(mutex_);
+    const bool active = prospero && index != nullptr;
+    const bool changed = active != prospero_active_ || (active && index.get() != index_.get());
+    prospero_active_ = active;
+    index_ = active ? std::move(index) : nullptr;
+    return changed;
 }
 
 std::size_t PosterIndex::size() const

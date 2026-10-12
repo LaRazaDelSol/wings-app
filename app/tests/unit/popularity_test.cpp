@@ -2,6 +2,7 @@
 // (off => no call, cache fallback) and the local download counter.
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include "core/save_file.hpp"
 #include "orbit/game_view.hpp"
 #include "orbit/popularity.hpp"
 #include "support.hpp"
@@ -82,6 +83,9 @@ TEST(Popularity, SchemaRejects)
     PopularityIndex index;
     std::string error;
     EXPECT_FALSE(PopularityIndex::parse(doc(rec("PPSA00001", 50, 1.0), "2"), &index, &error)); // wrong version
+    EXPECT_NE(error.find("newer Wings"), std::string::npos); // a newer format says what to do
+    EXPECT_FALSE(PopularityIndex::parse(doc(rec("PPSA00001", 50, 1.0), "0"), &index, &error));
+    EXPECT_EQ(error, "unsupported data version");
     EXPECT_FALSE(PopularityIndex::parse("{\"schemaVersion\":1}", &index, &error));              // no titles
     EXPECT_FALSE(PopularityIndex::parse("not json", &index, &error));
     EXPECT_FALSE(PopularityIndex::parse(doc(rec("PPSA00001", 500, 1.0)), &index, &error)); // no usable record
@@ -259,66 +263,99 @@ TEST(Popularity, HeroLowParsesWithTheSameChecksAndLooksUpByTitleId)
     // First title id that has one; unknown ids have none.
     EXPECT_EQ(index.hero_low({"PPSA00004", "PPSA00001"}), "https://cdn.example.com/l.webp");
     EXPECT_EQ(index.hero_low({"PPSA09999"}), "");
-    EXPECT_TRUE(index.has_hero());
 }
 
-TEST(Popularity, ASavedCopyWithoutAnyHeroIsRefreshedAtOnce)
+TEST(Popularity, ASavedCopyFromAnotherBuildIsRefreshedAtOnce)
 {
     const std::string dir = tmp_dir();
     PopularityServiceConfig config;
     config.cache_paths = {dir + "/pop.v1"};
+    config.app_tag = "00.001.001+20261012-100000";
     std::int64_t now = 1000000;
     config.now = [&now] { return now; };
     FakeFetcher fetcher;
     fetcher.result.status = 200;
     fetcher.result.body = doc(rec("PPSA00001", 60, 1.0));
+    const auto start = [&](const PopularityServiceConfig &c)
     {
         PopularityHub hub;
-        PopularityService service(hub, fetcher, config);
+        PopularityService service(hub, fetcher, c);
         service.apply(true, "");
         service.wait_idle();
-        EXPECT_EQ(fetcher.calls, 1);
-        EXPECT_FALSE(hub.index()->has_hero());
+        return hub.index() != nullptr;
+    };
+    ASSERT_TRUE(start(config));
+    EXPECT_EQ(fetcher.calls, 1);
+    // The same build, well within the TTL: the saved copy is used and nothing is fetched.
+    ASSERT_TRUE(start(config));
+    EXPECT_EQ(fetcher.calls, 1);
+    // A new build (the app was updated), still within the TTL: fetched again at the first start.
+    config.app_tag = "00.001.002+20261013-090000";
+    ASSERT_TRUE(start(config));
+    EXPECT_EQ(fetcher.calls, 2);
+    // ... and that copy now carries the new tag.
+    ASSERT_TRUE(start(config));
+    EXPECT_EQ(fetcher.calls, 2);
+    // A test build made from the same version is a different build too.
+    config.app_tag = "00.001.002+20261013-110000";
+    ASSERT_TRUE(start(config));
+    EXPECT_EQ(fetcher.calls, 3);
+    // A copy saved by an app that did not tag its copies (no app line) is fetched again once.
+    {
+        const std::string old_copy = "fetched=" + std::to_string(now) + "\n" + doc(rec("PPSA00001", 60, 1.0));
+        ASSERT_TRUE(hui::save::write_atomic(dir + "/pop.v1", hui::save::encode(hui::save::Kind::stats, 1, old_copy))
+                        .empty());
     }
+    ASSERT_TRUE(start(config));
+    EXPECT_EQ(fetcher.calls, 4);
+    ASSERT_TRUE(start(config));
+    EXPECT_EQ(fetcher.calls, 4);
+    // A copy from another build and a failing fetch: the copy is still used, and the next start tries again.
+    config.app_tag = "00.001.003+20261014-090000";
+    fetcher.result = DocResult{};
+    fetcher.result.error = "connection refused";
+    PopularityHub hub;
     {
-        // Well within the TTL, but the saved copy has no hero art: fetched again.
-        fetcher.result.body = doc(rec("PPSA00001", 60, 1.0, 80, 100, std::string(kHeroJson) + kLowJson));
-        PopularityHub hub;
         PopularityService service(hub, fetcher, config);
         service.apply(true, "");
         service.wait_idle();
-        EXPECT_EQ(fetcher.calls, 2);
-        EXPECT_TRUE(hub.index()->has_hero());
     }
+    EXPECT_EQ(fetcher.calls, 5);
+    ASSERT_NE(hub.index(), nullptr);
+    EXPECT_EQ(hub.index()->size(), 1u);
+    EXPECT_NE(hub.status().message.find("Could not refresh"), std::string::npos);
+    EXPECT_TRUE(start(config));
+    EXPECT_EQ(fetcher.calls, 6);
+}
+
+TEST(Popularity, ACopyWithoutHeroArtIsNotFetchedAgainWhileItIsFresh)
+{
+    // A custom source may have no hero art at all; that must not mean a download on every start.
+    const std::string dir = tmp_dir();
+    PopularityServiceConfig config;
+    config.cache_paths = {dir + "/pop.v1"};
+    config.app_tag = "00.001.001+20261012-100000";
+    std::int64_t now = 1000000;
+    config.now = [&now] { return now; };
+    FakeFetcher fetcher;
+    fetcher.result.status = 200;
+    fetcher.result.body = doc(rec("PPSA00001", 60, 1.0));
+    for (int start = 0; start < 3; ++start)
     {
-        // Now it has some: within the TTL nothing is fetched.
         PopularityHub hub;
         PopularityService service(hub, fetcher, config);
         service.apply(true, "");
         service.wait_idle();
-        EXPECT_EQ(fetcher.calls, 2);
-    }
-    {
-        // A saved copy without hero art and a failing fetch: the copy is still used.
-        std::ofstream(dir + "/pop.v1", std::ios::binary | std::ios::trunc) << "x";
-        PopularityHub seed_hub;
-        fetcher.result.body = doc(rec("PPSA00001", 60, 1.0));
-        {
-            PopularityService seed(seed_hub, fetcher, config);
-            seed.apply(true, "");
-            seed.wait_idle();
-        }
-        const int before = fetcher.calls;
-        fetcher.result = DocResult{};
-        fetcher.result.error = "connection refused";
-        PopularityHub hub;
-        PopularityService service(hub, fetcher, config);
-        service.apply(true, "");
-        service.wait_idle();
-        EXPECT_EQ(fetcher.calls, before + 1);
         ASSERT_NE(hub.index(), nullptr);
-        EXPECT_EQ(hub.index()->size(), 1u);
     }
+    EXPECT_EQ(fetcher.calls, 1);
+    // Past the TTL it is fetched again, as always.
+    now += 25 * 3600;
+    PopularityHub hub;
+    PopularityService service(hub, fetcher, config);
+    service.apply(true, "");
+    service.wait_idle();
+    EXPECT_EQ(fetcher.calls, 2);
 }
 
 TEST(Popularity, LocalDownloadsPersist)

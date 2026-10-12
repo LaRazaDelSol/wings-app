@@ -126,7 +126,8 @@ Workflow: `.github/workflows/popularity.yml` (weekly, Monday 04:17 UTC, plus man
 Actions are pinned by commit SHA; permissions are minimal and per job.
 
 * Repository variable `WINGS_CONTACT`: contact string for the User-Agent.
-* Repository variable `WINGS_PROVIDERS` (optional): `wikipedia,steam,pic0,igdb` to turn IGDB on (the CI default is `wikipedia,steam,pic0`).
+* Repository variable `WINGS_PROVIDERS` (optional): when set it REPLACES the CI default (`wikipedia,steam,pic0`), so list every
+  provider you want, for example `wikipedia,steam,pic0,igdb` to turn IGDB on. A list without `pic0` produces no pic0 art.
 * Repository secrets `TWITCH_CLIENT_ID` and `TWITCH_CLIENT_SECRET` (only for IGDB; Twitch 2FA account, confidential
   app). Secrets are read from the environment only, never from arguments, never printed, never cached, and one token is
   minted per run.

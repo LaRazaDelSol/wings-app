@@ -161,6 +161,7 @@ def run(args, environ=None, http=None, log=lambda m: print(m, file=sys.stderr)):
     if args.report:
         os.makedirs(os.path.dirname(os.path.abspath(args.report)), exist_ok=True)
         with open(args.report, "w", encoding="utf-8", newline="\n") as f:
-            f.write(reportmod.render(entries, results, records, used, doc["generatedAt"], skipped))
+            f.write(reportmod.render(entries, results, records, used, doc["generatedAt"], skipped,
+                                       ids_only=getattr(args, "report_ids_only", False)))
     log("wrote %s: %d of %d titles, %d bytes" % (args.out, len(records), len(entries), size))
     return doc, results

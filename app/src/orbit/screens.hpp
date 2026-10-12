@@ -82,11 +82,15 @@ struct Context
     std::uint32_t mark = 0;        // the Wings mark, 128 px
     std::uint32_t loader_mark = 0; // the mark, dimmed outer strokes, 256 px
     std::string app_version;       // this app's contentVersion
+    // What the player reads for the version ("0.1.1", plus the build for a test build); app_version when empty.
+    std::string app_label;
     // Opens Pegasus DL's web UI in the console browser; empty where impossible.
     std::function<bool()> open_pegasus_ui;
     // Settings > Cover art. Null where the HTTPS art module is not built in
     // (the preview and the unit tests); the section then says so.
     CoverArtControl *cover_art = nullptr;
+    // The poster resolver; the App tells it the cover icon source (Settings > Art sources). Null where there is none.
+    PosterIndex *posters = nullptr;
     // The grid tells the art service which covers are just off screen (keys
     // like "pkg:123"). Empty where there is no art service.
     std::function<void(const std::vector<std::string> &)> prefetch_art;
@@ -1224,6 +1228,10 @@ class SettingsScreen final : public ListScreen
         pegasus_download,
         pegasus_cancel,
         pegasus_send,
+        update_check,
+        wings_update,
+        icon_source,
+        hero_source,
     };
     enum class Pending : std::uint8_t
     {
@@ -1245,6 +1253,7 @@ class SettingsScreen final : public ListScreen
         region,
         format,
         providers,
+        wings_update,
     };
     enum class Typing : std::uint8_t
     {
@@ -1453,6 +1462,9 @@ class App
     int capture_button_ = 0;     // 0 hide / close, 1 cancel the capture
     ui::Ease capture_in_;
     std::uint64_t capture_toasted_ = 0; // capture_serial whose completion was announced
+    // A newer Wings (wings_update.hpp): looked for when the network is ready, announced once per start.
+    float update_poll_ = 0.0f;
+    bool update_announced_ = false;
 };
 
 } // namespace orbit

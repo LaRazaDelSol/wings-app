@@ -127,6 +127,8 @@ void ArtCache::tick()
         if (found == entries_.end())
             continue; // dropped while it was decoding
         Entry &entry = found->second;
+        if (entry.state == State::ready)
+            continue; // an older request for the same image finished late: keep what is shown
         if (!decoded.ok)
         {
             entry.state = State::failed;
@@ -192,6 +194,25 @@ void ArtCache::clear()
     entries_.clear();
     pending_uploads_.fetch_sub(static_cast<int>(uploads_.size()));
     uploads_.clear();
+}
+
+void ArtCache::reset_covers()
+{
+    for (auto it = entries_.begin(); it != entries_.end();)
+    {
+        if (is_hero(it->first))
+        {
+            ++it;
+            continue;
+        }
+        if (it->second.state == State::ready)
+        {
+            sink_.destroy(it->second.art.texture);
+            if (it->second.art.ambient != 0)
+                sink_.destroy(it->second.art.ambient);
+        }
+        it = entries_.erase(it); // a decode still on its way finds no entry and is dropped
+    }
 }
 
 void ArtCache::retry_failed()

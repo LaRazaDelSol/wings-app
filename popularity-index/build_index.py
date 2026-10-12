@@ -13,6 +13,8 @@ def main(argv=None):
     ap.add_argument("--catalogue", required=True, help="library.json or catalogue-titles.json (titleId + title)")
     ap.add_argument("--out", default="out/popularity.v1.json")
     ap.add_argument("--report", default="out/report.md")
+    ap.add_argument("--report-ids-only", action="store_true",
+                    help="leave game titles out of the report (CI: the report is public, the title list is not)")
     ap.add_argument("--overrides", default="overrides.json")
     ap.add_argument("--providers", default=",".join(DEFAULT_PROVIDERS),
                     help="comma list of wikipedia,steam,igdb (igdb is opt-in and needs env secrets)")

@@ -79,6 +79,8 @@ Libraries, fonts and versions are listed in full in [CREDITS.md](CREDITS.md). If
 - **Cover art.** Store posters are downloaded over HTTPS by Wings itself and cached on the console (up to 96 MiB). **On by default**; turn it off in Settings.
 - **Optional popularity.** Sort by most popular or highest rated, and show a score and rating on tiles, from a small public data file. **On by default**; turn it off in Settings. See [Popularity data and privacy](docs/guides/popularity-and-privacy.md).
 - **Tile details setting.** Store tiles show their link tier and regions Always, On focus (default) or Never.
+- **Choose where art comes from.** Settings > Wings > Art sources: cover icons from the catalogue (default) or from Prosperopatches (each title's PS5 icon), and the wide picture behind a game's page from every source (default) or from Prosperopatches only (the PS5's own background).
+- **Knows when it is out of date.** Wings checks this project's latest release when it starts and tells you if a newer one exists, with the steps to install it. It never installs itself. See [Updating Wings](docs/guides/updating.md).
 
 ## Install
 
@@ -96,7 +98,7 @@ This is the same setup Orbit Store asks for. Pegasus DL must be running on the c
 4. Wait about ten seconds. ShadowMountPlus registers it and a **Wings** tile appears in the Games row.
 5. Open **Wings**.
 
-To replace an older build under the same title ID, replace the file, remove the staged copies ShadowMountPlus made, then restart the jailbreak chain so the new package is mounted. To remove Wings, close it, delete `/data/homebrew/PPSA99178.ffpkg` (or the folder `/data/homebrew/PPSA99178/`), and restart the jailbreak chain so the tile disappears. Optionally delete `/data/wings/` (diagnostics and a copy of the settings). Pegasus DL and its downloads are not touched.
+To replace an older build under the same title ID (see [Updating Wings](docs/guides/updating.md)), replace the file, remove the staged copies ShadowMountPlus made, then restart the jailbreak chain so the new package is mounted. To remove Wings, close it, delete `/data/homebrew/PPSA99178.ffpkg` (or the folder `/data/homebrew/PPSA99178/`), and restart the jailbreak chain so the tile disappears. Optionally delete `/data/wings/` (diagnostics and a copy of the settings). Pegasus DL and its downloads are not touched.
 
 Wings writes only to its own folders: `/download0/wings/` (cover cache, settings, diagnostics, inside the title's storage) and `/data/wings/` (diagnostics and a copy of the settings, so you can read them in the file manager).
 
@@ -121,6 +123,7 @@ More detail: [Getting started](docs/guides/getting-started.md).
 | [The Files tab](docs/guides/files-tab.md) | Browse, select, copy, move, extract, install, cancel |
 | [Archive passwords](docs/guides/archive-passwords.md) | The auto-try, the prompt, "choose what to keep" |
 | [After a download: ShadowMount scan](docs/guides/after-install-scan.md) | Why a new game waits for Wings to close, and the banner |
+| [Updating Wings](docs/guides/updating.md) | How Wings tells you about a new release, and how to install it |
 | [Popularity data and privacy](docs/guides/popularity-and-privacy.md) | What is fetched, from where, how to stop it |
 | [Troubleshooting and FAQ](docs/guides/troubleshooting.md) | Waiting for Pegasus, covers, "extraction failed", diagnostics |
 
@@ -152,7 +155,9 @@ Wings has no account, no telemetry that this project operates, and no analytics.
 | Cover art **on** | The cover servers named in your catalogue's poster URLs, over HTTPS | Downloading the images. Those servers see the console's IP address. |
 | Only when you press Check, or at most every 6 hours while Settings > Pegasus DL is open (needs Cover art on) | `api.github.com` (the author's release list, one small file) | Showing the latest official Pegasus DL version. GitHub sees the console's IP address. |
 | Only when you press Download and confirm | `github.com`, then GitHub's `objects.githubusercontent.com` | The official `Pegasus-dl.elf` (about 20 MB), checked against GitHub's SHA-256 before it is saved. Nothing else is accepted. |
-| Popularity **on** (default) | `larazadelsol.github.io` (GitHub Pages), one file, at most once per 24 hours | Scores and ratings, keyed by title ID. GitHub sees the console's IP address. The file has no user data and Wings sends no identifier beyond a fixed `WingsTV/0.1` User-Agent. |
+| Popularity **on** (default) | `larazadelsol.github.io` (GitHub Pages), one file, at most once per 24 hours and once after Wings is updated | Scores and ratings, keyed by title ID. GitHub sees the console's IP address. The file has no user data and Wings sends no identifier beyond a fixed `WingsTV/0.1` User-Agent. |
+| Art sources set to **Prosperopatches** (off by default; needs Cover art on) | `cdn.prosperopatches.com` over HTTPS | Cover icons and game-page backgrounds, for the titles the popularity data lists there. Prosperopatches sees the console's IP address and the image asked for. |
+| Update check **on** (default; needs Cover art on) | `api.github.com` (the latest release of this project, one small file), when Wings starts and then at most every 6 hours | Telling you when a newer Wings exists. GitHub sees the console's IP address and the same fixed User-Agent. Turn it off in Settings > Wings > Updates. |
 
 Turn **Cover art** off and Popularity (which needs it) stops too: Wings then makes **no internet connection at all**. Pegasus DL has its own network behaviour (sources, debrid, downloads); that is Pegasus, not Wings. Details: [Popularity data and privacy](docs/guides/popularity-and-privacy.md).
 
