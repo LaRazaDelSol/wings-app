@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/LaRazaDelSol/wings-app/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/LaRazaDelSol/wings-app?label=release&color=24292f"></a>
-  <a href="https://github.com/LaRazaDelSol/wings-app/releases/download/latest/PPSA99178.ffpkg"><img alt="Download" src="https://img.shields.io/badge/download-release-24292f"></a>
+  <a href="https://github.com/LaRazaDelSol/wings-app/releases/latest/download/PPSA99178.ffpkg"><img alt="Download" src="https://img.shields.io/badge/download-release-24292f"></a>
   <img alt="PS5 homebrew" src="https://img.shields.io/badge/PS5-homebrew-24292f">
 </p>
 
