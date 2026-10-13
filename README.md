@@ -3,8 +3,8 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/LaRazaDelSol/wings-app/releases/tag/v0.1.0"><img alt="Release" src="https://img.shields.io/github/v/release/LaRazaDelSol/wings-app?label=release&color=24292f"></a>
-  <a href="https://github.com/LaRazaDelSol/wings-app/releases/download/v0.1.0/PPSA99178.ffpkg"><img alt="Download" src="https://img.shields.io/badge/download-release-24292f"></a>
+  <a href="https://github.com/LaRazaDelSol/wings-app/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/LaRazaDelSol/wings-app?label=release&color=24292f"></a>
+  <a href="https://github.com/LaRazaDelSol/wings-app/releases/download/latest/PPSA99178.ffpkg"><img alt="Download" src="https://img.shields.io/badge/download-release-24292f"></a>
   <img alt="PS5 homebrew" src="https://img.shields.io/badge/PS5-homebrew-24292f">
 </p>
 
@@ -24,7 +24,7 @@ One clean page per game. See what every link is before you press it. Manage your
 
 | What Wings is | What Wings is not |
 |---|---|
-| A PS5 app (title ID `PPSA99178`) that is a front end for a **Pegasus DL you already run** on the same console, through its local API at `127.0.0.1:6970`. | Not Pegasus DL, not affiliated with its author, and not a replacement for it. Pegasus does the downloading, installing and extracting. |
+| A PS5 app (title ID `PPSA99178`) that is a front end & performance patcher for a **Pegasus DL** on the same console, through its local API at `127.0.0.1:6970`. | Not Pegasus DL, not affiliated with its author, and not a replacement for it. Pegasus does the downloading, installing and extracting. |
 | A better way to browse what Pegasus already knows: games grouped one per tile, links explained, files managed with a controller. | Not a source of games. Wings ships **no catalogues, no sources and no download links**. Only play and use games you legally own and are permitted to install. |
 | Free software, GPL-3.0-or-later, built on the TV app of Orbit Store. | Not Orbit Store. None of Orbit's backend (payload, loader, pairing, update feeds) is in Wings. |
 
