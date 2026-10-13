@@ -48,7 +48,7 @@ struct ArtLimits
     int hero_width = 1920;  // backgrounds fit inside this ...
     int hero_height = 1080; // ... and this
     int max_covers = 96;    // textures kept before the least recent go (4K grids)
-    int max_heroes = 2; // an open page: the small one and the full one
+    int max_heroes = 3; // an open page: the small one and the full one; the Store's hero: the same two and the next small one
     int uploads_per_frame = 2;
     double retry_failed = 60.0; // seconds before a failed image is asked again
     // Decoded images waiting for upload: the worker stops decoding at this many

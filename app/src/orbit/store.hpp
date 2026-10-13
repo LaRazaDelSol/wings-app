@@ -104,6 +104,9 @@ struct LinkStart
     std::string error; // empty: Pegasus took it
     LinkResult::Kind kind = LinkResult::Kind::dispatched;
     std::string message;
+    // The error is the kind that may pass by itself (timed out, Pegasus busy or not answering, a 5xx):
+    // asking again later is worth it. False for answers that will not change (not supported, not found).
+    bool transient = false;
 };
 
 // The outcome of the last player action of one kind.
@@ -232,8 +235,21 @@ class Store
     void start_link(const std::string &package_id, int link_index, const std::string &service);
     // The same call, and `done` on the frame thread once it ended (after the
     // snapshot and link_action() show it), so a series can count its parts.
+    // An automated capture (no browser needed) is waited for on the worker:
+    // `done` comes once the session completed (queued), failed, was stopped
+    // (stop_series) or the wait limit passed (transient "timed out ..."). A
+    // capture that needs the PS5 browser is not waited for: it ends with an error.
     void start_link(const std::string &package_id, int link_index, const std::string &service,
                     std::function<void(const LinkStart &)> done);
+    // Frame thread: a series start_link() waiting for a capture ends at its next
+    // poll with the error "stopped". Cleared by the next series start_link().
+    void stop_series();
+    // How often a series start_link() asks for the capture state, and for how
+    // long at most, in seconds (defaults 1 and 120; tests use 0).
+    void set_series_wait(double poll_seconds, double limit_seconds);
+    // Optional: one "[WINGS-PARTS] ..." line per series start_link(), from the worker.
+    // Set before start().
+    std::function<void(const std::string &)> log;
     void debrid_select(const std::string &selection_id, const std::vector<int> &indexes,
                        const std::string &service);
     // False (and nothing sent) while Pegasus is already resolving the link.
@@ -292,6 +308,10 @@ class Store
     void post_tiers(Result<std::vector<std::uint8_t>> &&tiers);
     void note_sources(const std::vector<Source> &sources);
     void poll_capture();
+    // One status read of `session`, posted like poll_capture() does; true (and
+    // *seen set) when Pegasus answered.
+    bool poll_session(const std::string &session, CaptureView *seen);
+    void wait_capture(const CaptureView &started, LinkStart *outcome);
     void track_session(const CaptureView &view);
 
     Backend &backend_;
@@ -308,6 +328,9 @@ class Store
     bool poll_requested_ = true;
     bool stopping_ = false;
     std::string capture_session_; // under mutex_: the session being watched
+    bool series_stop_ = false;    // under mutex_: stop_series() was asked
+    double series_poll_ = 1.0;    // under mutex_: seconds between capture reads of a series wait
+    double series_limit_ = 120.0; // under mutex_: longest series wait, seconds
     std::atomic<bool> fast_{false};
     std::atomic<bool> want_logs_{false};
     std::atomic<bool> want_installed_{false};

@@ -39,6 +39,24 @@ TEST(wire_format_matches_fetch)
     CHECK(http::format_request(up, "h", 1).find("Content-Type: application/octet-stream\r\n") != std::string::npos);
 }
 
+TEST(link_start_posts_get_the_long_timeout)
+{
+    for (const char *path : {"/api/queue", "/api/provider/resolve", "/api/browser/open", "/api/debrid/queue",
+                             "/api/queue/direct", "/api/resolve/probe", "/api/queue?x=1"})
+        CHECK(http::timeout_for("POST", path) == http::kLinkStartTimeoutMs);
+    CHECK(http::kLinkStartTimeoutMs == 30000);
+    // Polls and every other call keep the transport's own limit.
+    CHECK(http::timeout_for("GET", "/api/queue") == 0);
+    CHECK(http::timeout_for("GET", "/api/provider/resolve") == 0);
+    CHECK(http::timeout_for("POST", "/api/queue/pause") == 0);
+    CHECK(http::timeout_for("POST", "/api/queue/clear-finished") == 0);
+    CHECK(http::timeout_for("POST", "/api/settings") == 0);
+    CHECK(http::timeout_for("GET", "/api/capture/status?sessionId=7") == 0);
+    CHECK(http::timeout_for("POST", "/api/queuex") == 0);
+    http::Request plain;
+    CHECK(plain.timeout_ms == 0);
+}
+
 TEST(wire_response_parsing)
 {
     http::Response res;

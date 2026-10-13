@@ -61,6 +61,7 @@ Reply call(http::Transport &transport, const std::string &method, const std::str
     request.body = body;
     request.content_type = contentType;
     request.max_bytes = maxBytes;
+    request.timeout_ms = http::timeout_for(method, path);
     const http::Response response = transport.send(request);
     if (!response.transported())
     {

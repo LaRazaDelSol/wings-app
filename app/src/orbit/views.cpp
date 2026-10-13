@@ -108,7 +108,8 @@ void draw_heading(Context &ctx, hui::gfx::DrawList &list, const char *title,
 void draw_busy(Context &ctx, hui::gfx::DrawList &list, const char *text)
 {
     const ui::Type &type = ctx.type;
-    const float width = std::max(520.0f, type.medium.measure(text, 26.0f) + 140.0f);
+    // The words get the box minus the dots (130 left) and a margin (30 right): sized so they fit whole.
+    const float width = std::max(520.0f, std::min(1840.0f, type.medium.measure(text, 26.0f) + 190.0f));
     const ui::Rect r{960.0f - width * 0.5f, 470.0f, width, 120.0f};
     ui::modal(list, r);
     // Three dots, breathing in turn.

@@ -23,6 +23,7 @@ struct Request
     std::string body;                 // raw body (JSON text, or raw file bytes for upload)
     std::string content_type;         // sent only when a body is present; "" => application/json
     std::size_t max_bytes = 0;        // reply size limit; 0 = kDefaultLimit
+    int timeout_ms = 0;               // socket time limit for this request; 0 = the transport's own
 };
 
 struct Response
@@ -41,6 +42,16 @@ struct Response
 
 constexpr std::size_t kDefaultLimit = 8u << 20;
 constexpr std::size_t kLibraryLimit = 128u << 20; // /api/library is ~7 MB today
+
+// The POSTs that start a download make Pegasus resolve a provider or pre-create
+// a large file before it answers, so they get this long; everything else keeps
+// the transport's own (short) limit.
+constexpr int kLinkStartTimeoutMs = 30000;
+
+// The time limit the adapter asks for one request: kLinkStartTimeoutMs for
+// POST /api/queue, /api/queue/direct, /api/provider/resolve, /api/browser/open,
+// /api/debrid/queue and /api/resolve/probe (any query string ignored), else 0.
+int timeout_for(std::string_view method, std::string_view path);
 
 class Transport
 {

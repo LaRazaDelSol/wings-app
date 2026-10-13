@@ -155,6 +155,24 @@ bool dechunk(std::string_view body, std::string *out)
 
 } // namespace
 
+int timeout_for(std::string_view method, std::string_view path)
+{
+    if (method != "POST")
+        return 0;
+    const std::size_t query = path.find('?');
+    if (query != std::string_view::npos)
+        path = path.substr(0, query);
+    static constexpr std::string_view kLinkStarts[] = {"/api/queue",        "/api/queue/direct",
+                                                       "/api/provider/resolve", "/api/browser/open",
+                                                       "/api/debrid/queue", "/api/resolve/probe"};
+    for (const std::string_view start : kLinkStarts)
+    {
+        if (path == start)
+            return kLinkStartTimeoutMs;
+    }
+    return 0;
+}
+
 SocketTransport::SocketTransport(std::string host, std::uint16_t port, int timeout_ms)
     : host_(std::move(host)), port_(port), timeout_ms_(timeout_ms)
 {
@@ -209,14 +227,15 @@ Response SocketTransport::send(const Request &request)
         response.error = "socket failed";
         return response;
     }
+    const int limit_ms = request.timeout_ms > 0 ? request.timeout_ms : timeout_ms_;
 #ifdef _WIN32
-    const DWORD timeout = static_cast<DWORD>(timeout_ms_);
+    const DWORD timeout = static_cast<DWORD>(limit_ms);
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char *>(&timeout), sizeof(timeout));
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char *>(&timeout), sizeof(timeout));
 #else
     timeval timeout{};
-    timeout.tv_sec = timeout_ms_ / 1000;
-    timeout.tv_usec = (timeout_ms_ % 1000) * 1000;
+    timeout.tv_sec = limit_ms / 1000;
+    timeout.tv_usec = (limit_ms % 1000) * 1000;
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
 #endif

@@ -201,5 +201,56 @@ TEST(HeroPrefetchGate, LeavingTheGridAndComingBackAllowsAnotherLook)
     EXPECT_TRUE(gate.update("g:a", t += 1.0));
 }
 
+TEST(ArtSources, TheIgdbFullAddressIsTheSamePictureAtFullSize)
+{
+    EXPECT_EQ(igdb_full_url("https://images.igdb.com/igdb/image/upload/t_screenshot_big/abc.jpg"),
+              "https://images.igdb.com/igdb/image/upload/t_1080p/abc.jpg");
+    EXPECT_EQ(igdb_full_url("https://images.igdb.com/igdb/image/upload/t_1080p/abc.jpg"), "");
+    EXPECT_EQ(igdb_full_url("https://images.igdb.com/igdb/image/upload/t_screenshot_big/"), "");
+    EXPECT_EQ(igdb_full_url("https://evil.example/igdb/image/upload/t_screenshot_big/abc.jpg"), "");
+    EXPECT_EQ(igdb_full_url(""), "");
+}
+
+TEST(ArtSources, AGameWithTwoDifferentPicturesShowsOneWholeAndTheChoiceAlternates)
+{
+    const std::string low = "https://images.igdb.com/igdb/image/upload/t_screenshot_big/abc.jpg";
+    const std::string doc = "{\"schemaVersion\":1,\"generatedAt\":\"2026-10-12T00:00:00Z\",\"attribution\":{},"
+                            "\"titles\":{\"PPSA01234\":{\"score\":60,\"confidence\":1.0,\"sources\":[\"igdb\"],"
+                            "\"hero\":\"" + kPic0 + "\",\"heroLow\":\"" + low + "\"},"
+                            "\"PPSA05678\":{\"score\":60,\"confidence\":1.0,\"sources\":[\"igdb\"],"
+                            "\"hero\":\"" + kIgdb + "\",\"heroLow\":\"" + low + "\"}}}";
+    PopularityIndex index;
+    std::string error;
+    ASSERT_TRUE(PopularityIndex::parse(doc, &index, &error)) << error;
+
+    // Both pictures exist: the first is Prosperopatches' alone (no small one flashed first) ...
+    HeroPick first = pick_hero(index, {"PPSA01234"}, HeroSource::all, false);
+    EXPECT_TRUE(first.has_both);
+    EXPECT_FALSE(first.second);
+    EXPECT_EQ(first.full, kPic0);
+    EXPECT_EQ(first.low, "");
+    // ... the other is IGDB's, at full size, its small stand-in being the same picture.
+    HeroPick second = pick_hero(index, {"PPSA01234"}, HeroSource::all, true);
+    EXPECT_TRUE(second.has_both);
+    EXPECT_TRUE(second.second);
+    EXPECT_EQ(second.full, "https://images.igdb.com/igdb/image/upload/t_1080p/abc.jpg");
+    EXPECT_EQ(second.low, low);
+    // Their cache keys differ, so they never share a texture.
+    EXPECT_NE(hero_art_key("pkg:7", false), hero_art_key("pkg:7", true));
+    EXPECT_EQ(hero_art_key("pkg:7", false), "pkg:7");
+
+    // An IGDB-only game keeps what it had: the picture and its own small stand-in, no alternation.
+    HeroPick igdb = pick_hero(index, {"PPSA05678"}, HeroSource::all, true);
+    EXPECT_FALSE(igdb.has_both);
+    EXPECT_FALSE(igdb.second);
+    EXPECT_EQ(igdb.full, kIgdb);
+    EXPECT_EQ(igdb.low, low);
+    // Prosperopatches only: the one picture, nothing from IGDB.
+    HeroPick only = pick_hero(index, {"PPSA01234"}, HeroSource::prospero, true);
+    EXPECT_FALSE(only.has_both);
+    EXPECT_EQ(only.full, kPic0);
+    EXPECT_EQ(only.low, "");
+}
+
 } // namespace
 } // namespace orbit

@@ -269,9 +269,11 @@ Response SocketTransport::send(const Request &request)
         response.error = "socket failed";
         return response;
     }
+    // Per request (no shared state): the worker and the catalogue thread share this transport.
+    const int limit_ms = request.timeout_ms > 0 ? request.timeout_ms : timeout_ms_;
     timeval timeout{};
-    timeout.tv_sec = timeout_ms_ / 1000;
-    timeout.tv_usec = (timeout_ms_ % 1000) * 1000;
+    timeout.tv_sec = limit_ms / 1000;
+    timeout.tv_usec = (limit_ms % 1000) * 1000;
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
     setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
 #ifdef SO_NOSIGPIPE

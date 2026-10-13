@@ -187,6 +187,11 @@ struct PegasusManagerConfig
     std::string loader_host = "127.0.0.1";
     std::uint16_t loader_port = kPegasusLoaderPort;
     std::function<std::int64_t()> now;      // unix seconds (default: the system clock)
+    // Experimental, off by default everywhere: before a send, try the patches in
+    // pegasus_patch.hpp against the verified stock file. A patch only ever applies to the exact
+    // source SHA-256 it was derived from; anything else (a different Pegasus build, a pattern that
+    // moved) sends the stock file unchanged. docs/research/pegasus-dl-patch.md has the detail.
+    bool experimental_patch_pegasus = false;
 };
 
 class PegasusManager
@@ -225,8 +230,12 @@ class PegasusManager
   private:
     void run_check();
     void run_download(PegasusRelease release);
-    void run_send(std::string path);
+    void run_send(std::string path, std::string note = {});
     void run_verify_send(PegasusRelease release);
+    // Experimental (config_.experimental_patch_pegasus only): a patched sibling of the verified
+    // `stock_path`, or `stock_path` itself unchanged when nothing applied or anything went wrong.
+    // Never fails the send; *note describes what happened, for the caller to report.
+    std::string apply_experimental_patch(const std::string &stock_path, std::string *note) const;
     void finish(const std::string &message, bool is_error);
     bool gate(std::string *why) const;
     void refresh_downloaded_locked();

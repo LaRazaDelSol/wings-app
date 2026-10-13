@@ -8,6 +8,7 @@
 #include "orbit/store.hpp"
 
 #include "orbit/i18n.hpp"
+#include "orbit/link_retry.hpp"
 
 #include <algorithm>
 #include <memory>
@@ -34,6 +35,35 @@ enum Chan
     chan_probe = 3,
     chan_none = -1,
 };
+
+const char *kind_name(LinkResult::Kind kind)
+{
+    switch (kind)
+    {
+    case LinkResult::Kind::dispatched:
+        return "dispatched";
+    case LinkResult::Kind::capture:
+        return "capture";
+    case LinkResult::Kind::select_files:
+        return "select_files";
+    case LinkResult::Kind::browser_opened:
+        return "browser_opened";
+    case LinkResult::Kind::blocked:
+        return "blocked";
+    }
+    return "?";
+}
+
+// [WINGS-PARTS] pkg=<id> link=<n> kind=<k> transient=<0|1> ms=<elapsed> err=<text, 80 chars at most>
+std::string parts_line(const std::string &package_id, int link_index, const LinkStart &outcome,
+                       double seconds)
+{
+    std::string line = "[WINGS-PARTS] pkg=" + package_id + " link=" + std::to_string(link_index) +
+                       " kind=" + kind_name(outcome.kind) + " transient=" + (outcome.transient ? "1" : "0") +
+                       " ms=" + std::to_string(static_cast<long long>(seconds * 1000.0)) + " err=";
+    line += outcome.error.substr(0, 80);
+    return line;
+}
 } // namespace
 
 const Package *Snapshot::package(std::string_view id) const
@@ -275,22 +305,29 @@ void Store::poll_capture()
     }
     if (session.empty())
         return;
+    poll_session(session, nullptr);
+}
+
+bool Store::poll_session(const std::string &session, CaptureView *seen)
+{
     Result<CaptureView> status = backend_.capture_status(session);
     if (!status.ok())
     {
         // A missed poll is not a failed capture; try again next time.
         if (status.unreachable())
             post_failure(status.error, true);
-        return;
+        return false;
     }
     CaptureView view = std::move(status.value);
     if (view.session_id.empty())
         view.session_id = session;
-    const bool done = view.terminal();
-    if (done)
+    if (seen != nullptr)
+        *seen = view;
+    if (view.terminal())
     {
         Lock lock(mutex_);
-        capture_session_.clear();
+        if (capture_session_ == session)
+            capture_session_.clear();
     }
     if (view.state == "completed" && view.result.has_jobs)
         post_jobs(view.result.jobs);
@@ -300,6 +337,7 @@ void Store::poll_capture()
         poll_requested_ = true;
     }
     post_capture(std::move(view));
+    return true;
 }
 
 void Store::poll_once()
@@ -698,15 +736,30 @@ void Store::start_link(const std::string &package_id, int link_index, const std:
 void Store::start_link(const std::string &package_id, int link_index, const std::string &service,
                        std::function<void(const LinkStart &)> done)
 {
+    {
+        Lock lock(mutex_);
+        series_stop_ = false;
+    }
     auto outcome = std::make_shared<LinkStart>();
     submit(chan_link,
            [this, package_id, link_index, service, outcome]
            {
+               const double begun = now_seconds();
                Result<LinkResult> result = backend_.start_link(package_id, link_index, service);
                outcome->error = result.error;
                outcome->kind = result.value.kind;
                outcome->message = result.value.message;
-               return link_outcome(std::move(result));
+               outcome->transient =
+                   !result.ok() && transient_link_error(result.status, result.error, result.unreachable());
+               const bool capture = result.ok() && result.value.kind == LinkResult::Kind::capture;
+               const CaptureView started = capture ? result.value.capture : CaptureView{};
+               Outcome out = link_outcome(std::move(result));
+               // After link_outcome(): the session is tracked and shown while it is waited for.
+               if (capture)
+                   wait_capture(started, outcome.get());
+               if (this->log)
+                   this->log(parts_line(package_id, link_index, *outcome, now_seconds() - begun));
+               return out;
            });
     // A second command posts after the first one's channel update: the callback
     // sees the snapshot and link_action() as they are once this link ended.
@@ -724,6 +777,82 @@ void Store::debrid_select(const std::string &selection_id, const std::vector<int
     submit(chan_link,
            [this, selection_id, indexes, service]
            { return link_outcome(backend_.debrid_select(selection_id, indexes, service)); });
+}
+
+void Store::stop_series()
+{
+    {
+        Lock lock(mutex_);
+        series_stop_ = true;
+    }
+    signal_.notify();
+}
+
+void Store::set_series_wait(double poll_seconds, double limit_seconds)
+{
+    Lock lock(mutex_);
+    series_poll_ = poll_seconds;
+    series_limit_ = limit_seconds;
+}
+
+// Worker: waits for the automated capture a series start_link() began. The
+// session stays tracked (track_session), so the capture UI and Downloads follow
+// every read; a timed-out or stopped wait leaves it to the normal poll.
+void Store::wait_capture(const CaptureView &started, LinkStart *outcome)
+{
+    if (started.requires_browser)
+    {
+        outcome->error = "needs a check in the PS5 browser: open this part on its own";
+        outcome->transient = false;
+        return;
+    }
+    if (started.session_id.empty())
+    {
+        outcome->error = "Pegasus did not start a capture session";
+        outcome->transient = false;
+        return;
+    }
+    double poll = 1.0;
+    double limit = 120.0;
+    {
+        Lock lock(mutex_);
+        poll = series_poll_;
+        limit = series_limit_;
+    }
+    const double begun = now_seconds();
+    CaptureView view = started;
+    while (!view.terminal())
+    {
+        {
+            Lock lock(mutex_);
+            const double until = now_seconds() + poll;
+            while (!series_stop_ && !stopping_ && now_seconds() < until)
+                signal_.wait(mutex_, until - now_seconds());
+            if (series_stop_ || stopping_)
+            {
+                outcome->error = "stopped";
+                outcome->transient = false;
+                return;
+            }
+        }
+        poll_session(started.session_id, &view);
+        if (!view.terminal() && now_seconds() - begun >= limit)
+        {
+            outcome->error = "timed out waiting for the provider";
+            outcome->transient = true;
+            return;
+        }
+    }
+    outcome->message = view.message;
+    if (view.state == "completed")
+    {
+        outcome->error.clear();
+        outcome->kind = LinkResult::Kind::dispatched;
+        outcome->transient = false;
+        return;
+    }
+    outcome->error = view.message.empty() ? "capture " + view.state : view.message;
+    outcome->transient = transient_link_error(0, outcome->error, false);
 }
 
 bool Store::cancel_capture()

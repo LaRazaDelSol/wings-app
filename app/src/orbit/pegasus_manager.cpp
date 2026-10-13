@@ -7,6 +7,7 @@
 #include "orbit/i18n.hpp"
 #include "orbit/json.hpp"
 #include "orbit/pegasus_load_flow.hpp" // sha256_file
+#include "orbit/pegasus_patch.hpp"
 #include "orbit/pegasus_version.hpp"
 
 #include <arpa/inet.h>
@@ -989,7 +990,9 @@ void PegasusManager::run_verify_send(PegasusRelease release)
         finish(tr("Pegasus DL answered, so nothing was sent."), false);
         return;
     }
-    run_send(path);
+    std::string note;
+    const std::string send_path = apply_experimental_patch(path, &note);
+    run_send(send_path, note);
 }
 
 bool PegasusManager::send_to_loader(bool pegasus_online)
@@ -1001,10 +1004,102 @@ bool PegasusManager::send_to_loader(bool pegasus_online)
             return false;
         path = status_.path;
     }
-    return start_job(PegasusPhase::sending, [this, path] { run_send(path); });
+    return start_job(PegasusPhase::sending,
+                     [this, path]
+                     {
+                         std::string note;
+                         const std::string send_path = apply_experimental_patch(path, &note);
+                         run_send(send_path, note);
+                     });
 }
 
-void PegasusManager::run_send(std::string path)
+// Experimental, off unless config_.experimental_patch_pegasus: writes a patched sibling of the
+// verified `stock_path` next to it (never overwrites the original) and returns its path, or
+// `stock_path` unchanged when the config flag is off, no catalogue patch matched this exact file, or
+// anything about writing the copy failed. A send never blocks on this; worst case it sends the same
+// verified stock file it always did.
+std::string PegasusManager::apply_experimental_patch(const std::string &stock_path, std::string *note) const
+{
+    if (!config_.experimental_patch_pegasus)
+        return stock_path;
+    // This build compiles with -fno-exceptions (confirmed from the actual target compile command),
+    // so there is no try/catch to fall back on here: an allocation failure anywhere below aborts
+    // directly rather than throwing. The re-read-and-verify step after the write is the hardening
+    // that IS possible under that constraint - it catches a torn/short write or filesystem
+    // corruption before anything downstream (the send, the loader) ever sees a bad file.
+    {
+        std::string data;
+        if (!hui::save::read_file(stock_path, &data, kPegasusDownloadCap))
+        {
+            *note = tr("experimental patch: could not read the verified file, sent unchanged");
+            return stock_path;
+        }
+        std::vector<std::uint8_t> bytes(data.begin(), data.end());
+        data.clear();
+        data.shrink_to_fit(); // drop the string copy before the byte-vector copies below
+        pegasus_patch::Result result;
+        std::vector<std::uint8_t> patched =
+            pegasus_patch::apply(bytes, pegasus_patch::builtin_catalogue(), &result);
+        bytes.clear();
+        bytes.shrink_to_fit(); // one fewer ~20MB buffer alive during apply_structural's own copy
+        // P1 (the structural writer-thread patch) runs on whatever P0 produced; the two touch
+        // disjoint regions of the file, so order does not matter. Independent of whether P0
+        // matched - either, both or neither may apply to a given build.
+        pegasus_patch::StructuralResult structural;
+        patched = pegasus_patch::apply_structural(patched, pegasus_patch::builtin_structural_catalogue(), &structural);
+        std::vector<std::string> applied = result.applied;
+        if (structural.changed)
+            applied.push_back(structural.id);
+        if (applied.empty())
+        {
+            *note = tr("experimental patch: no catalogue entry matched this exact build, sent unchanged");
+            return stock_path;
+        }
+        std::string ids;
+        for (const std::string &id : applied)
+            ids += (ids.empty() ? "" : ", ") + id;
+        const std::string out_path = stock_path + ".patched.elf";
+        const std::string part = out_path + ".part";
+        FILE *f = std::fopen(part.c_str(), "wb");
+        bool wrote = f != nullptr;
+        if (f != nullptr)
+        {
+            wrote = std::fwrite(patched.data(), 1, patched.size(), f) == patched.size();
+            wrote = (std::fflush(f) == 0) && wrote;
+            wrote = (std::fclose(f) == 0) && wrote;
+        }
+        if (wrote)
+        {
+            std::remove(out_path.c_str());
+            wrote = std::rename(part.c_str(), out_path.c_str()) == 0;
+        }
+        if (!wrote)
+        {
+            std::remove(part.c_str());
+            *note = tr("experimental patch: {ids} matched but the patched copy could not be saved, sent "
+                       "unchanged",
+                       {{"ids", ids}});
+            return stock_path;
+        }
+        // Re-read the file we just wrote and verify, byte for byte, that it matches what we
+        // intended to write (catches a torn/short write, a filesystem that silently truncates, or
+        // disk corruption on this specific console, before anything downstream ever touches it).
+        std::string verify;
+        if (!hui::save::read_file(out_path, &verify, kPegasusDownloadCap) || verify.size() != patched.size() ||
+            !std::equal(verify.begin(), verify.end(), reinterpret_cast<const char *>(patched.data())))
+        {
+            std::remove(out_path.c_str());
+            *note = tr("experimental patch: {ids} matched but the saved copy failed verification, sent "
+                       "unchanged",
+                       {{"ids", ids}});
+            return stock_path;
+        }
+        *note = tr("experimental patch applied: {ids}", {{"ids", ids}});
+        return out_path;
+    }
+}
+
+void PegasusManager::run_send(std::string path, std::string note)
 {
     std::string error;
     const std::string where = config_.loader_host + ":" + std::to_string(config_.loader_port);
@@ -1033,6 +1128,8 @@ void PegasusManager::run_send(std::string path)
     status_.sent = true;
     status_.message = tr("Sent to the payload loader at {where}. Wait for Wings to say Pegasus DL is running.",
                          {{"where", where}});
+    if (!note.empty())
+        status_.message += "  \xC2\xB7  " + note;
     status_.message_is_error = false;
 }
 

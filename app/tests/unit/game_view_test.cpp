@@ -89,6 +89,22 @@ struct Rig
         frame(Direction::none, hui::action_bit(action));
         frame();
     }
+    // Runs "Download all parts" to its end: the queued work, and a second at a
+    // time through the waits between attempts (they count down in update()).
+    void run_batch()
+    {
+        for (int round = 0; round < 200 && screen().batch_running(); ++round)
+        {
+            work();
+            if (!screen().batch_running())
+                break;
+            hui::InputFrame input;
+            input.connected = true;
+            feedback.clear();
+            app->update(input, 1.0f, feedback);
+        }
+        work();
+    }
     StoreScreen &screen()
     {
         return app->store_screen();
@@ -457,11 +473,15 @@ TEST(GamePageScreen, DownloadAllPartsConfirmsThenQueuesEachPartAndReportsFailure
     EXPECT_EQ(r.backend.started_links(), 0); // nothing before the confirmation
     r.press(hui::Action::confirm);
     EXPECT_TRUE(s.batch_running());
-    r.work();
+    r.run_batch();
     EXPECT_FALSE(s.batch_running());
-    EXPECT_EQ(r.backend.started_links(), 5); // one at a time: it stops at part 6
-    EXPECT_EQ(s.started_links().keys.size(), 5u);
-    EXPECT_TRUE(s.confirm_open()); // "5 of 22 parts queued", part 6 named
+    // One at a time; part 6 (a 502, asked three times, no other host carries it)
+    // is skipped and the series goes on to part 22.
+    EXPECT_EQ(r.backend.started_links(), 21);
+    EXPECT_EQ(s.started_links().keys.size(), 21u);
+    ASSERT_TRUE(s.confirm_open()); // the report: "21 of 22 parts queued", part 6 named
+    EXPECT_EQ(s.confirm_dialog().title(), "21 of 22 parts queued");
+    EXPECT_NE(s.confirm_dialog().message().find("Part 6"), std::string::npos) << s.confirm_dialog().message();
     r.press(hui::Action::confirm);
     EXPECT_FALSE(s.confirm_open());
     // Again: only the parts from the one that failed.
@@ -472,7 +492,7 @@ TEST(GamePageScreen, DownloadAllPartsConfirmsThenQueuesEachPartAndReportsFailure
     EXPECT_EQ(s.list_dialog().items()[6].right, "");
     r.press(hui::Action::confirm);
     r.press(hui::Action::confirm);
-    r.work();
+    r.run_batch();
     EXPECT_EQ(r.backend.started_links(), 22);
     EXPECT_EQ(s.started_links().keys.size(), 22u);
     EXPECT_FALSE(s.confirm_open());
@@ -710,7 +730,7 @@ TEST(GameViewLibrary, EveryGameOfTheRecordedCatalogueBuildsThroughTheViewModel)
 
     // Every game page: built, laid out, every card and every filter value.
     const auto t_pages = std::chrono::steady_clock::now();
-    long pages = 0, cards = 0, sets = 0, best = 0, filter_steps = 0, empty_pages = 0;
+    long pages = 0, cards = 0, sets = 0, best = 0, filter_steps = 0, empty_pages = 0, alternate_sets = 0;
     for (const GameGroup &g : index.games)
     {
         std::vector<PackageDetail> d;
@@ -745,6 +765,32 @@ TEST(GameViewLibrary, EveryGameOfTheRecordedCatalogueBuildsThroughTheViewModel)
                 EXPECT_EQ(plan.total, c.part_count);
                 EXPECT_EQ(plan.refs.size(), plan.one_at_a_time ? 1u : static_cast<std::size_t>(c.part_count));
                 EXPECT_FALSE(plan.action.empty());
+                // Each stand-in is the same part on another host of the same release.
+                ASSERT_EQ(plan.numbers.size(), plan.refs.size());
+                ASSERT_EQ(plan.alternates.size(), plan.refs.size());
+                ASSERT_EQ(plan.alternate_hosts.size(), plan.refs.size());
+                bool any = false;
+                for (std::size_t i = 0; i < plan.refs.size(); ++i)
+                {
+                    ASSERT_EQ(plan.alternate_hosts[i].size(), plan.alternates[i].size());
+                    for (std::size_t a = 0; a < plan.alternates[i].size(); ++a)
+                    {
+                        any = true;
+                        EXPECT_NE(plan.alternate_hosts[i][a], plan.host) << g.title;
+                        EXPECT_FALSE(plan.alternates[i][a] == plan.refs[i]);
+                        int number = 0;
+                        for (int o = 0; o < static_cast<int>(v.page.mirrors.size()) && number == 0; ++o)
+                        {
+                            const Mirror &om = v.page.mirrors[static_cast<std::size_t>(o)];
+                            if (o != m && om.release == v.page.mirrors[static_cast<std::size_t>(m)].release &&
+                                om.host == plan.alternate_hosts[i][a])
+                                number = mirror_part_number(v.page, o, plan.alternates[i][a]);
+                        }
+                        EXPECT_EQ(number, plan.numbers[i]) << g.title;
+                        EXPECT_GT(number, 0) << g.title;
+                    }
+                }
+                alternate_sets += any ? 1 : 0;
             }
         }
         // Every value of every filter row the panel would show.
@@ -772,8 +818,10 @@ TEST(GameViewLibrary, EveryGameOfTheRecordedCatalogueBuildsThroughTheViewModel)
                 "%ld with Best, %ld filter steps in %.2f s\n",
                 all.value.size(), facts_seconds, index.games.size(), runs, jpn, no_browser, regions.size(),
                 grid_seconds, pages, empty_pages, cards, sets, best, filter_steps, page_seconds);
+    std::printf("[game view] %ld of %ld part sets have the same parts on another host\n", alternate_sets, sets);
     EXPECT_EQ(pages, static_cast<long>(index.games.size()));
     EXPECT_GT(sets, 1000);
+    EXPECT_GT(alternate_sets, 0);
     EXPECT_LT(grid_seconds, 10.0);
 }
 

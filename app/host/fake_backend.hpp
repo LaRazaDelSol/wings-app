@@ -14,6 +14,7 @@
 #include "orbit/backend.hpp"
 #include "orbit/thread.hpp"
 
+#include <functional>
 #include <map>
 #include <string>
 #include <vector>
@@ -45,6 +46,18 @@ class FakeBackend final : public Backend
     void set_failing_link(const std::string &package_id, int link_index);
     // start_link() calls that reached a link (tests).
     int started_links() const;
+    // Scripted capture (tests): while `states` is not empty, an automated or
+    // capture link starts a session with this requires_browser value, and each
+    // capture_status() answers the next of `states` ("priming", "queueing",
+    // "completed", "failed", ...), the last one repeating. `message` goes with a
+    // "failed" or "cancelled" state; "completed" queues a job.
+    void set_capture_script(std::vector<std::string> states, bool requires_browser = false,
+                            std::string message = std::string());
+    // Called at every scripted capture_status(), outside the fake's lock, with
+    // the number of scripted reads so far (tests: act in the middle of a wait).
+    void set_capture_hook(std::function<void(int)> hook);
+    // Scripted capture_status() calls seen (tests).
+    int capture_reads() const;
     // Store posters ("pkg:" keys). Off (default): no artwork, as with the HTTPS
     // art service switched off. On: stands in for the service, so the preview and
     // tests see covers arriving: the first two asks per key answer "pending",
@@ -233,6 +246,12 @@ class FakeBackend final : public Backend
     bool capture_automated_ = false;
     int cancelled_ = 0;
     std::string failing_link_; // "<packageId>#<linkIndex>"
+    std::vector<std::string> script_states_;
+    std::size_t script_pos_ = 0;
+    bool script_browser_ = false;
+    std::string script_message_;
+    int script_reads_ = 0;
+    std::function<void(int)> capture_hook_;
     int started_links_ = 0;
     bool store_art_ = false;
     std::map<std::string, int> art_asks_;

@@ -80,25 +80,25 @@ TEST(Carousel, WrapsSlides)
 TEST(Carousel, ButtonsAreTheFocusStopsAndTheEdgesChangeSlide)
 {
     // Install -> Favourite on Right, back on Left.
-    CarouselStep s = carousel_step(1, kCarouselInstall, 3, Direction::right);
+    CarouselStep s = carousel_step(1, kCarouselView, 3, Direction::right);
     EXPECT_TRUE(s.moved);
     EXPECT_FALSE(s.slide_changed);
     EXPECT_EQ(s.button, kCarouselFavourite);
     EXPECT_EQ(s.slide, 1);
     s = carousel_step(1, kCarouselFavourite, 3, Direction::left);
-    EXPECT_EQ(s.button, kCarouselInstall);
+    EXPECT_EQ(s.button, kCarouselView);
     EXPECT_EQ(s.slide, 1);
     // The edge buttons change the slide and keep the button.
     s = carousel_step(1, kCarouselFavourite, 3, Direction::right);
     EXPECT_TRUE(s.slide_changed);
     EXPECT_EQ(s.slide, 2);
     EXPECT_EQ(s.button, kCarouselFavourite);
-    s = carousel_step(1, kCarouselInstall, 3, Direction::left);
+    s = carousel_step(1, kCarouselView, 3, Direction::left);
     EXPECT_EQ(s.slide, 0);
-    EXPECT_EQ(s.button, kCarouselInstall);
+    EXPECT_EQ(s.button, kCarouselView);
     // Wraps both ways.
     EXPECT_EQ(carousel_step(2, kCarouselFavourite, 3, Direction::right).slide, 0);
-    EXPECT_EQ(carousel_step(0, kCarouselInstall, 3, Direction::left).slide, 2);
+    EXPECT_EQ(carousel_step(0, kCarouselView, 3, Direction::left).slide, 2);
 }
 
 TEST(Carousel, OneSlideRefusesTheEdgesAndOtherDirectionsDoNothing)
@@ -106,14 +106,14 @@ TEST(Carousel, OneSlideRefusesTheEdgesAndOtherDirectionsDoNothing)
     CarouselStep s = carousel_step(0, kCarouselFavourite, 1, Direction::right);
     EXPECT_FALSE(s.moved);
     EXPECT_EQ(s.slide, 0);
-    s = carousel_step(0, kCarouselInstall, 1, Direction::left);
+    s = carousel_step(0, kCarouselView, 1, Direction::left);
     EXPECT_FALSE(s.moved);
     for (const Direction d : {Direction::up, Direction::down, Direction::none})
     {
-        s = carousel_step(1, kCarouselInstall, 3, d);
+        s = carousel_step(1, kCarouselView, 3, d);
         EXPECT_FALSE(s.moved);
         EXPECT_EQ(s.slide, 1);
-        EXPECT_EQ(s.button, kCarouselInstall);
+        EXPECT_EQ(s.button, kCarouselView);
     }
 }
 
@@ -147,24 +147,39 @@ TEST(Carousel, GridScrollWithCarouselKeepsTheFocusedRowOnScreen)
     constexpr float pitch = 330.5f;
     constexpr float top = 240.0f;
     constexpr float bottom = 1000.0f;
-    EXPECT_FLOAT_EQ(grid_scroll_target(0, pitch, kCarouselExtra), 0.0f);
+    // Row 0 scrolls the hero away: the header and the first row sit where they do without a carousel.
+    EXPECT_FLOAT_EQ(grid_scroll_target(0, pitch, kCarouselExtra), kCarouselExtra);
     for (int row = 0; row < 40; ++row)
     {
         const float scroll = grid_scroll_target(row, pitch, kCarouselExtra);
         const float y = top + kCarouselExtra + static_cast<float>(row) * pitch - scroll;
+        // The same place as without a carousel.
+        EXPECT_FLOAT_EQ(y, top + static_cast<float>(row) * pitch - grid_scroll_target(row, pitch, 0.0f)) << row;
         EXPECT_GE(y, top - 1.0f) << row;
         EXPECT_LE(y + 306.0f, bottom) << row;
     }
-    // Row 0 stays visible whole under the carousel.
-    EXPECT_LE(top + kCarouselExtra + 306.0f, bottom);
-    // From row 1 on the focused row is second from the top, as without a carousel.
-    EXPECT_FLOAT_EQ(top + kCarouselExtra + 1.0f * pitch - grid_scroll_target(1, pitch, kCarouselExtra), top + pitch);
 }
 
-TEST(Carousel, ArtBoxIsSixteenByNine)
+TEST(Carousel, HeroAtRestShowsTheGridHeaderAndTheTopOfTheFirstRow)
 {
-    EXPECT_NEAR(kCarouselHeight * kCarouselArtAspect, 711.1f, 0.2f);
-    EXPECT_LT(kCarouselHeight * kCarouselArtAspect, 5.0f * 306.0f + 4.0f * 24.5f);
+    // With the focus on the hero (scroll 0) the first row's tiles start under the words and well above the hint
+    // bar (it covers from 960), so a good part of them peeks in; the header sits just above them.
+    constexpr float top = 240.0f;
+    const float first_row = top + kCarouselExtra;
+    EXPECT_GT(first_row, 800.0f);
+    EXPECT_LT(first_row, 960.0f - 100.0f);
+    // The hero's picture is taller than Orbit's (which ends near 640) and ends before the tiles.
+    EXPECT_GT(kCarouselArtH, 700.0f);
+    EXPECT_LE(kCarouselArtH, first_row);
+}
+
+TEST(Carousel, HeroFadesAsThePageSlidesUp)
+{
+    EXPECT_FLOAT_EQ(carousel_fade(0.0f), 1.0f);
+    EXPECT_FLOAT_EQ(carousel_fade(kCarouselExtra), 0.0f);
+    EXPECT_FLOAT_EQ(carousel_fade(kCarouselExtra * 3.0f), 0.0f);
+    EXPECT_FLOAT_EQ(carousel_fade(-5.0f), 1.0f);
+    EXPECT_GT(carousel_fade(kCarouselExtra * 0.2f), carousel_fade(kCarouselExtra * 0.4f));
 }
 
 } // namespace

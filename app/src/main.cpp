@@ -359,6 +359,7 @@ int main()
     hui::sys::log("[WINGS] language=%s system=%d", orbit::i18n::language().data(), system_language);
 
     orbit::Store store(backend);
+    store.log = [](const std::string &line) { hui::sys::log("%s", line.c_str()); };
 
     // ---- Cover art (wings/art): https posters, fetched by the app itself ----
     // Start-up facts first, so the very first console run is informative even
@@ -453,6 +454,13 @@ int main()
         pm.docs = &doc_fetcher;
         pm.downloader = &pegasus_downloader;
         pm.cache_paths = {std::string(kWingsDir) + "/pegasus_releases.v1", "/data/wings/pegasus_releases.v1"};
+        // EXPERIMENTAL BUILD ONLY - set back to false before any real release package. Turns on the
+        // P0 Pegasus DL patch (docs/research/pegasus-dl-patch.md): before a send, pegasus_patch.hpp
+        // tries its catalogue against the exact verified stock file; it only ever changes bytes when
+        // the file's SHA-256 matches a catalogue entry precisely, and it never touches the original
+        // on disk (it writes a `.patched.elf` sibling and sends that instead, falling back to the
+        // stock file unchanged on any mismatch or error).
+        pm.experimental_patch_pegasus = true;
         orbit::pegasus_manager().attach(std::move(pm));
     }
     // A newer Wings: a look at the project's latest release once the network is ready (wings_update.hpp).

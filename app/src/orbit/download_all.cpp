@@ -12,6 +12,29 @@
 namespace orbit
 {
 
+namespace
+{
+
+// "7", "7 and 12", "7, 12 and 33", "7, 12, 33 and 4 more".
+std::string compact_list(const std::vector<std::string> &items)
+{
+    constexpr std::size_t kShown = 3;
+    if (items.empty())
+        return {};
+    if (items.size() == 1)
+        return items[0];
+    const std::size_t head_count = items.size() <= kShown ? items.size() - 1 : kShown;
+    std::string head = items[0];
+    for (std::size_t i = 1; i < head_count; ++i)
+        head += ", " + items[i];
+    if (items.size() <= kShown)
+        return tr("{first} and {last}", {{"first", head}, {"last", items.back()}});
+    return trn(static_cast<long>(items.size() - kShown), "{list} and {count} more", "{list} and {count} more",
+               {{"list", head}});
+}
+
+} // namespace
+
 std::string part_failure_reason(const LinkStart &outcome)
 {
     if (!outcome.error.empty())
@@ -22,39 +45,93 @@ std::string part_failure_reason(const LinkStart &outcome)
         return tr("the debrid service asks which files to take: open this part on its own");
     if (outcome.kind == LinkResult::Kind::browser_opened)
         return tr("it opened in the PS5 browser instead of the queue");
+    if (outcome.kind == LinkResult::Kind::capture)
+        return tr("still resolving"); // a capture that started is not a queued part
     return {};
 }
 
-void DownloadAll::begin(std::vector<LinkRef> refs, std::vector<int> numbers, std::string host_name, Start start,
+void DownloadAll::begin(std::vector<PartPlan> parts, std::string host_name, Start start,
                         std::function<void(const LinkRef &)> queued, std::function<void()> finished)
 {
-    ++generation_;
-    refs_ = std::move(refs);
-    numbers_ = std::move(numbers);
-    numbers_.resize(refs_.size(), 0);
+    ++call_; // a Done still out from an earlier run is ignored
+    parts_ = std::move(parts);
     host = std::move(host_name);
-    total = static_cast<int>(refs_.size());
+    total = static_cast<int>(parts_.size());
     done = 0;
     ok = 0;
-    next_ = 0;
     end = End::none;
+    current = 0;
+    attempt = 0;
+    trying_host.clear();
+    waiting = 0.0f;
+    failed.clear();
+    via_alternate = 0;
+    alternates.clear();
     failed_number = 0;
     failed_why.clear();
+    part_ = 0;
+    ref_ = 0;
+    tries_ = 0;
+    in_a_row_ = 0;
+    last_why_.clear();
+    in_flight_ = false;
+    waiting_ = false;
     cancel_ = false;
     start_ = std::move(start);
     queued_ = std::move(queued);
     finished_ = std::move(finished);
     active = total > 0;
-    step();
+    if (active)
+        attempt_now();
+}
+
+void DownloadAll::begin(std::vector<LinkRef> refs, std::vector<int> numbers, std::string host_name, Start start,
+                        std::function<void(const LinkRef &)> queued, std::function<void()> finished)
+{
+    std::vector<PartPlan> parts;
+    parts.reserve(refs.size());
+    for (std::size_t i = 0; i < refs.size(); ++i)
+    {
+        PartPlan part;
+        part.number = i < numbers.size() ? numbers[i] : 0;
+        part.refs.push_back(std::move(refs[i]));
+        part.hosts.push_back(host_name);
+        parts.push_back(std::move(part));
+    }
+    begin(std::move(parts), std::move(host_name), std::move(start), std::move(queued), std::move(finished));
+}
+
+void DownloadAll::tick(float dt)
+{
+    if (!active || !waiting_ || in_flight_)
+        return;
+    if (dt > 0.0f)
+        waiting -= dt;
+    if (waiting > 0.0f)
+        return;
+    waiting = 0.0f;
+    waiting_ = false;
+    attempt_now();
 }
 
 void DownloadAll::cancel()
 {
-    if (active)
-        cancel_ = true;
+    if (!active)
+        return;
+    cancel_ = true;
+    if (!in_flight_)
+        finish(End::cancelled); // nothing is out: a wait ends at once
 }
 
-void DownloadAll::step()
+const std::string &DownloadAll::host_of(std::size_t ref) const
+{
+    const PartPlan &part = parts_[part_];
+    if (ref < part.hosts.size() && !part.hosts[ref].empty())
+        return part.hosts[ref];
+    return host;
+}
+
+void DownloadAll::attempt_now()
 {
     if (!active)
         return;
@@ -63,42 +140,114 @@ void DownloadAll::step()
         finish(End::cancelled);
         return;
     }
-    if (next_ >= total)
+    const PartPlan &part = parts_[part_];
+    current = part.number;
+    if (ref_ >= part.refs.size())
     {
-        finish(End::finished);
+        // Every host of this part was tried (or it has none).
+        part_failed(last_why_.empty() ? std::string(tr("no link for this part")) : last_why_);
         return;
     }
-    const int index = next_;
-    const int generation = generation_;
-    start_(refs_[static_cast<std::size_t>(index)],
-           [this, index, generation](const LinkStart &outcome)
-           {
-               if (generation == generation_ && active)
-                   on_result(index, outcome);
-           });
+    attempt = tries_ + 1;
+    trying_host = host_of(ref_);
+    waiting = 0.0f;
+    waiting_ = false;
+    in_flight_ = true;
+    const int call = ++call_;
+    const LinkRef ref = part.refs[ref_]; // a copy: Done may run inside start_ and move the series on
+    start_(ref, [this, call](const LinkStart &outcome) { on_result(call, outcome); });
 }
 
-void DownloadAll::on_result(int index, const LinkStart &outcome)
+void DownloadAll::on_result(int call, const LinkStart &outcome)
 {
-    ++done;
+    if (call != call_ || !in_flight_ || !active)
+        return; // an older start, a second Done, or a series that ended
+    in_flight_ = false;
     const std::string why = part_failure_reason(outcome);
-    if (!why.empty())
+    if (why.empty())
     {
-        failed_number = numbers_[static_cast<std::size_t>(index)];
-        failed_why = why;
-        finish(End::failed);
+        part_queued();
         return;
     }
+    // A capture without an error has not decided anything yet: worth asking again.
+    const bool resolving = outcome.error.empty() && outcome.kind == LinkResult::Kind::capture;
+    const bool transient = outcome.transient || resolving;
+    last_why_ = parts_[part_].refs.size() > 1 ? host_of(ref_) + ": " + why : why;
+    ++tries_;
+    if (cancel_)
+    {
+        finish(End::cancelled);
+        return;
+    }
+    if (transient && tries_ < kPartAttempts)
+    {
+        waiting = tries_ == 1 ? kFirstBackoff : kSecondBackoff;
+        waiting_ = true;
+        return; // tick() starts the next attempt
+    }
+    ++ref_; // the next host of the same part, or the part failed
+    tries_ = 0;
+    attempt_now();
+}
+
+void DownloadAll::part_queued()
+{
+    const PartPlan &part = parts_[part_];
+    ++done;
     ++ok;
+    in_a_row_ = 0;
+    if (ref_ > 0)
+    {
+        ++via_alternate;
+        alternates.push_back(AlternatePart{part.number, host_of(ref_)});
+    }
+    const LinkRef ref = part.refs[ref_];
     if (queued_)
-        queued_(refs_[static_cast<std::size_t>(index)]);
-    next_ = index + 1;
-    step();
+        queued_(ref);
+    next_part();
+}
+
+void DownloadAll::part_failed(const std::string &why)
+{
+    ++done;
+    failed.push_back(FailedPart{current, why});
+    failed_number = current;
+    failed_why = why;
+    ++in_a_row_;
+    if (in_a_row_ >= kStopAfterFailedParts && part_ + 1 < parts_.size())
+    {
+        finish(End::stopped);
+        return;
+    }
+    next_part();
+}
+
+void DownloadAll::next_part()
+{
+    ++part_;
+    ref_ = 0;
+    tries_ = 0;
+    attempt = 0;
+    last_why_.clear();
+    if (part_ >= parts_.size())
+    {
+        finish(failed.empty() ? End::finished : End::finished_with_failures);
+        return;
+    }
+    if (cancel_)
+    {
+        finish(End::cancelled);
+        return;
+    }
+    attempt_now();
 }
 
 void DownloadAll::finish(End how)
 {
     active = false;
+    in_flight_ = false;
+    waiting_ = false;
+    waiting = 0.0f;
     end = how;
     std::function<void()> callback = finished_;
     if (callback)
@@ -107,26 +256,65 @@ void DownloadAll::finish(End how)
 
 std::string DownloadAll::toast() const
 {
-    return trn(ok, "{count} part queued from {host}", "{count} parts queued from {host}", {{"host", host}});
+    std::string out =
+        trn(ok, "{count} part queued from {host}", "{count} parts queued from {host}", {{"host", host}});
+    if (via_alternate > 0)
+        out += " " + trn(via_alternate, "({count} from another host)", "({count} from other hosts)");
+    return out;
 }
 
 std::string DownloadAll::report_title() const
 {
+    const std::string ok_text = std::to_string(ok);
+    const std::string total_text = std::to_string(total);
     if (end == End::cancelled)
-        return tr("Cancelled: {ok} of {total} parts queued",
-                  {{"ok", std::to_string(ok)}, {"total", std::to_string(total)}});
-    return tr("{ok} of {total} parts queued", {{"ok", std::to_string(ok)}, {"total", std::to_string(total)}});
+        return tr("Cancelled: {ok} of {total} parts queued", {{"ok", ok_text}, {"total", total_text}});
+    if (end == End::stopped)
+        return tr("Stopped: {ok} of {total} parts queued", {{"ok", ok_text}, {"total", total_text}});
+    return tr("{ok} of {total} parts queued", {{"ok", ok_text}, {"total", total_text}});
 }
 
 std::string DownloadAll::report_message() const
 {
-    const std::string retry = tr("Choose \"Download all\" again to continue: parts already queued are left out.");
+    std::string out;
+    const auto add = [&out](const std::string &sentence)
+    {
+        if (sentence.empty())
+            return;
+        if (!out.empty())
+            out += ' ';
+        out += sentence;
+    };
     if (end == End::cancelled)
-        return tr("Stopped on your request after part {n} of {total}.",
-                  {{"n", std::to_string(done)}, {"total", std::to_string(total)}}) +
-               " " + retry;
-    return tr("Stopped at part {n}: {why}.", {{"n", std::to_string(failed_number)}, {"why", failed_why}}) + " " +
-           trn(ok, "{count} part was queued before it.", "{count} parts were queued before it.") + " " + retry;
+        add(tr("Stopped on your request after part {n} of {total}.",
+               {{"n", std::to_string(done)}, {"total", std::to_string(total)}}));
+    else if (end == End::stopped)
+        add(trn(kStopAfterFailedParts,
+                "Pegasus seems stuck: {count} part in a row did not queue, so the rest was not tried.",
+                "Pegasus seems stuck: {count} parts in a row did not queue, so the rest was not tried."));
+    if (failed.size() == 1)
+    {
+        add(tr("Part {n} did not queue: {why}.", {{"n", std::to_string(failed[0].number)}, {"why", failed[0].why}}));
+    }
+    else if (failed.size() > 1)
+    {
+        std::vector<std::string> numbers;
+        for (const FailedPart &part : failed)
+            numbers.push_back(std::to_string(part.number));
+        add(tr("Parts {list} did not queue. Last reason: {why}.",
+               {{"list", compact_list(numbers)}, {"why", failed.back().why}}));
+    }
+    add(trn(ok, "{count} part was queued.", "{count} parts were queued."));
+    if (!alternates.empty())
+    {
+        std::vector<std::string> items;
+        for (const AlternatePart &part : alternates)
+            items.push_back(tr("part {n} from {host}", {{"n", std::to_string(part.number)}, {"host", part.host}}));
+        add(trn(via_alternate, "{count} part came from another host: {list}.",
+                "{count} parts came from other hosts: {list}.", {{"list", compact_list(items)}}));
+    }
+    add(tr("Choose \"Download all\" again to continue: parts already queued are left out."));
+    return out;
 }
 
 // ---- the record of queued parts ----

@@ -22,6 +22,7 @@ struct Request
     std::string body;          // JSON for POST
     std::string bearer;        // pairing token, sent as Authorization
     std::size_t max_bytes = 0; // reply size limit; 0 = kDefaultLimit
+    int timeout_ms = 0;        // socket time limit for this request; 0 = the transport's own
 };
 
 struct Response

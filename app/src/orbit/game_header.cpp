@@ -311,6 +311,7 @@ void GameHeaderState::reset()
         f = 0.0f;
     hero_url.clear();
     hero_low_url.clear();
+    hero_key.clear();
     hero_resolved = false;
     hero_cached = false;
     open_s = 0.0f;

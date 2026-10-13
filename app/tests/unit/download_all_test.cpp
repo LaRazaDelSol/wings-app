@@ -1,4 +1,4 @@
-// Wings TV app - tests of "Download all parts": sequence, skip, stop on failure, cancel, saved record.
+// Wings TV app - tests of "Download all parts": sequence, retries, other hosts, skip and continue, cancel, record.
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #include "core/save_file.hpp"
@@ -9,8 +9,8 @@
 
 #include <gtest/gtest.h>
 
-#include <algorithm>
 #include <cstdlib>
+#include <deque>
 #include <functional>
 #include <string>
 #include <vector>
@@ -78,9 +78,90 @@ struct Series
             {
             }
             store.tick();
+            all.tick(0.5f);
         }
     }
 };
+
+LinkStart queued_outcome()
+{
+    return LinkStart{};
+}
+
+LinkStart failure(const std::string &error, bool transient)
+{
+    LinkStart outcome;
+    outcome.error = error;
+    outcome.transient = transient;
+    return outcome;
+}
+
+std::string key(const LinkRef &ref)
+{
+    return ref.package_id + "#" + std::to_string(ref.link_index);
+}
+
+// `count` parts of "pkg25" on VikingFile; `alternate` adds the same part on
+// Rapidgator ("pkg30", same index) after it.
+std::vector<PartPlan> plans(int count, bool alternate = false)
+{
+    std::vector<PartPlan> out;
+    for (int i = 0; i < count; ++i)
+    {
+        PartPlan part;
+        part.number = i + 1;
+        part.refs.push_back(LinkRef{"pkg25", i});
+        part.hosts.push_back("VikingFile");
+        if (alternate)
+        {
+            part.refs.push_back(LinkRef{"pkg30", i});
+            part.hosts.push_back("Rapidgator");
+        }
+        out.push_back(std::move(part));
+    }
+    return out;
+}
+
+// The series on a fake start: answers at once with `answer`, or (held) keeps
+// every Done for the test to call.
+struct Runner
+{
+    DownloadAll all;
+    bool held = false;
+    std::function<LinkStart(const LinkRef &)> answer = [](const LinkRef &) { return queued_outcome(); };
+    std::vector<LinkRef> asked;
+    std::deque<DownloadAll::Done> pending; // a deque: calling one may add the next
+    std::vector<LinkRef> queued;
+    int finished_calls = 0;
+
+    void run(std::vector<PartPlan> parts)
+    {
+        all.begin(
+            std::move(parts), "VikingFile",
+            [this](const LinkRef &ref, DownloadAll::Done done)
+            {
+                asked.push_back(ref);
+                if (held)
+                    pending.push_back(std::move(done));
+                else
+                    done(answer(ref));
+            },
+            [this](const LinkRef &ref) { queued.push_back(ref); }, [this] { ++finished_calls; });
+    }
+    // Frames of `dt` seconds until the series ends (or the frames run out).
+    void frames(int count, float dt = 0.5f)
+    {
+        for (int i = 0; i < count && all.active; ++i)
+            all.tick(dt);
+    }
+};
+
+const std::string kContinue = "Choose \"Download all\" again to continue: parts already queued are left out.";
+
+bool ends_with(const std::string &text, const std::string &tail)
+{
+    return text.size() >= tail.size() && text.compare(text.size() - tail.size(), tail.size(), tail) == 0;
+}
 
 std::vector<PackageDetail> starfall_details(host::FakeBackend &backend)
 {
@@ -108,29 +189,360 @@ TEST(DownloadAll, QueuesEveryPartInOrderOneAtATime)
 
 TEST(DownloadAll, NeverStartsTheNextPartBeforeThePreviousOneEnded)
 {
-    Series s;
-    int in_flight = 0;
-    int most = 0;
-    s.on_start = [&](const LinkRef &)
+    Runner r;
+    r.held = true;
+    r.run(plans(3));
+    EXPECT_TRUE(r.all.active);
+    ASSERT_EQ(r.asked.size(), 1u); // a start that has not answered holds the series at part 1
+    EXPECT_EQ(r.all.current, 1);
+    EXPECT_EQ(r.all.attempt, 1);
+    EXPECT_EQ(r.all.trying_host, "VikingFile");
+    r.frames(100); // frames alone move nothing while a part is out
+    EXPECT_EQ(r.asked.size(), 1u);
+    r.pending[0](queued_outcome());
+    ASSERT_EQ(r.asked.size(), 2u);
+    EXPECT_EQ(r.all.done, 1);
+    EXPECT_EQ(r.all.current, 2);
+    r.pending[0](queued_outcome()); // a second Done of the same part is ignored
+    EXPECT_EQ(r.asked.size(), 2u);
+    EXPECT_EQ(r.all.ok, 1);
+    r.pending[1](queued_outcome());
+    r.pending[2](queued_outcome());
+    EXPECT_FALSE(r.all.active);
+    EXPECT_EQ(r.all.end, DownloadAll::End::finished);
+    EXPECT_EQ(r.all.ok, 3);
+    EXPECT_EQ(r.queued.size(), 3u);
+    EXPECT_EQ(r.finished_calls, 1);
+}
+
+TEST(DownloadAll, AllQueuedOnTheFakeStart)
+{
+    Runner r;
+    r.run(plans(5));
+    EXPECT_FALSE(r.all.active);
+    EXPECT_EQ(r.all.end, DownloadAll::End::finished);
+    EXPECT_EQ(r.all.total, 5);
+    EXPECT_EQ(r.all.done, 5);
+    EXPECT_EQ(r.all.ok, 5);
+    EXPECT_TRUE(r.all.failed.empty());
+    EXPECT_EQ(r.all.via_alternate, 0);
+    EXPECT_EQ(r.asked.size(), 5u);
+    EXPECT_EQ(r.queued.size(), 5u);
+    EXPECT_EQ(r.finished_calls, 1);
+    EXPECT_EQ(r.all.toast(), "5 parts queued from VikingFile");
+}
+
+TEST(DownloadAll, ATimeoutIsAskedAgainAfterAWaitAndThenQueues)
+{
+    Runner r;
+    int calls = 0;
+    r.answer = [&calls](const LinkRef &ref)
     {
-        ++in_flight;
-        most = std::max(most, in_flight);
+        if (ref.link_index == 1 && ++calls <= 2)
+            return failure("timed out", true);
+        return queued_outcome();
     };
-    // The part counts as ended once the series moves on: start_link() of the
-    // next one is only reached from the previous one's callback.
-    s.run(s.parts(5));
-    EXPECT_EQ(s.all.ok, 5);
-    EXPECT_EQ(s.order.size(), 5u);
-    // While part k ran, no later part had been asked for.
-    EXPECT_EQ(in_flight, 5);
-    EXPECT_EQ(most, 5);
-    // Directly: a start that never answers holds the series at part 1.
-    DownloadAll held;
-    std::vector<LinkRef> asked;
-    held.begin(
-        s.parts(3), {1, 2, 3}, "H", [&](const LinkRef &ref, DownloadAll::Done) { asked.push_back(ref); }, {}, {});
-    EXPECT_TRUE(held.active);
-    EXPECT_EQ(asked.size(), 1u);
+    r.run(plans(3));
+    ASSERT_TRUE(r.all.active);
+    EXPECT_EQ(r.asked.size(), 2u);
+    EXPECT_EQ(r.all.current, 2);
+    EXPECT_EQ(r.all.attempt, 1);
+    EXPECT_FLOAT_EQ(r.all.waiting, kFirstBackoff);
+    r.all.tick(1.0f);
+    EXPECT_EQ(r.asked.size(), 2u); // still waiting
+    EXPECT_FLOAT_EQ(r.all.waiting, 1.0f);
+    r.all.tick(1.0f); // the wait is over: second attempt, timed out again
+    EXPECT_EQ(r.asked.size(), 3u);
+    EXPECT_EQ(r.all.attempt, 2);
+    EXPECT_FLOAT_EQ(r.all.waiting, kSecondBackoff);
+    r.all.tick(kSecondBackoff - 0.1f);
+    EXPECT_EQ(r.asked.size(), 3u);
+    r.all.tick(0.2f); // third attempt queues, part 3 follows at once
+    EXPECT_FALSE(r.all.active);
+    EXPECT_EQ(r.all.end, DownloadAll::End::finished);
+    EXPECT_EQ(r.all.ok, 3);
+    EXPECT_TRUE(r.all.failed.empty());
+    ASSERT_EQ(r.asked.size(), 5u);
+    EXPECT_EQ(key(r.asked[1]), "pkg25#1");
+    EXPECT_EQ(key(r.asked[2]), "pkg25#1");
+    EXPECT_EQ(key(r.asked[3]), "pkg25#1");
+    EXPECT_EQ(key(r.asked[4]), "pkg25#2");
+}
+
+TEST(DownloadAll, BackoffWaitsTwoThenSixSecondsThenGivesUpTheLink)
+{
+    EXPECT_EQ(kPartAttempts, 3);
+    EXPECT_FLOAT_EQ(kFirstBackoff, 2.0f);
+    EXPECT_FLOAT_EQ(kSecondBackoff, 6.0f);
+    Runner r;
+    r.answer = [](const LinkRef &) { return failure("timed out", true); };
+    r.run(plans(1));
+    EXPECT_EQ(r.asked.size(), 1u);
+    r.all.tick(kFirstBackoff - 0.1f);
+    EXPECT_EQ(r.asked.size(), 1u);
+    r.all.tick(0.2f);
+    EXPECT_EQ(r.asked.size(), 2u);
+    r.all.tick(kSecondBackoff - 0.5f);
+    EXPECT_EQ(r.asked.size(), 2u);
+    EXPECT_NEAR(r.all.waiting, 0.5f, 1e-4f);
+    r.all.tick(0.5f);
+    EXPECT_EQ(r.asked.size(), 3u); // three attempts, then the part is given up
+    EXPECT_FALSE(r.all.active);
+    EXPECT_EQ(r.all.end, DownloadAll::End::finished_with_failures);
+    ASSERT_EQ(r.all.failed.size(), 1u);
+    EXPECT_EQ(r.all.failed[0].number, 1);
+    EXPECT_EQ(r.all.failed[0].why, "timed out");
+    EXPECT_EQ(r.all.ok, 0);
+    EXPECT_TRUE(r.queued.empty());
+    r.frames(100);
+    EXPECT_EQ(r.asked.size(), 3u); // nothing after the end
+    // A zero or negative frame time never ends a wait.
+    Runner z;
+    z.answer = [](const LinkRef &) { return failure("timed out", true); };
+    z.run(plans(1));
+    z.all.tick(0.0f);
+    z.all.tick(-5.0f);
+    EXPECT_EQ(z.asked.size(), 1u);
+}
+
+TEST(DownloadAll, AnAnswerThatWillNotChangeGoesStraightToTheOtherHost)
+{
+    Runner r;
+    r.answer = [](const LinkRef &ref)
+    {
+        if (ref.package_id == "pkg25" && ref.link_index == 0)
+            return failure("not supported", false);
+        return queued_outcome();
+    };
+    r.run(plans(2, true));
+    EXPECT_FALSE(r.all.active);
+    EXPECT_EQ(r.all.end, DownloadAll::End::finished);
+    ASSERT_EQ(r.asked.size(), 3u); // no retry, no wait
+    EXPECT_EQ(key(r.asked[0]), "pkg25#0");
+    EXPECT_EQ(key(r.asked[1]), "pkg30#0");
+    EXPECT_EQ(key(r.asked[2]), "pkg25#1"); // the next part starts on the chosen host again
+    ASSERT_EQ(r.queued.size(), 2u);
+    EXPECT_EQ(key(r.queued[0]), "pkg30#0"); // the record keeps the link that worked
+    EXPECT_EQ(r.all.via_alternate, 1);
+    ASSERT_EQ(r.all.alternates.size(), 1u);
+    EXPECT_EQ(r.all.alternates[0].number, 1);
+    EXPECT_EQ(r.all.alternates[0].host, "Rapidgator");
+    EXPECT_EQ(r.all.toast(), "2 parts queued from VikingFile (1 from another host)");
+}
+
+TEST(DownloadAll, APartThatFailsEverywhereIsSkippedAndTheSeriesGoesOn)
+{
+    Runner r;
+    r.answer = [](const LinkRef &ref)
+    {
+        if (ref.link_index == 1)
+            return failure("not found", false); // part 2, both hosts
+        if (ref.link_index == 2 && ref.package_id == "pkg25")
+            return failure("not supported", false); // part 3 comes from Rapidgator
+        return queued_outcome();
+    };
+    r.run(plans(5, true));
+    EXPECT_FALSE(r.all.active);
+    EXPECT_EQ(r.all.end, DownloadAll::End::finished_with_failures);
+    EXPECT_EQ(r.all.total, 5);
+    EXPECT_EQ(r.all.done, 5);
+    EXPECT_EQ(r.all.ok, 4);
+    EXPECT_EQ(r.asked.size(), 7u); // 1, 2, 2', 3, 3', 4, 5
+    ASSERT_EQ(r.all.failed.size(), 1u);
+    EXPECT_EQ(r.all.failed[0].number, 2);
+    EXPECT_EQ(r.all.failed[0].why, "Rapidgator: not found");
+    EXPECT_EQ(r.all.failed_number, 2);
+    EXPECT_EQ(r.queued.size(), 4u);
+    EXPECT_EQ(r.finished_calls, 1);
+    EXPECT_EQ(r.all.report_title(), "4 of 5 parts queued");
+    const std::string message = r.all.report_message();
+    EXPECT_NE(message.find("Part 2 did not queue: Rapidgator: not found."), std::string::npos) << message;
+    EXPECT_NE(message.find("4 parts were queued."), std::string::npos) << message;
+    EXPECT_NE(message.find("1 part came from another host: part 3 from Rapidgator."), std::string::npos) << message;
+    EXPECT_TRUE(ends_with(message, kContinue)) << message;
+}
+
+TEST(DownloadAll, FourFailedPartsInARowStopTheSeries)
+{
+    EXPECT_EQ(kStopAfterFailedParts, 4);
+    Runner r;
+    r.answer = [](const LinkRef &ref)
+    {
+        if (ref.link_index >= 2)
+            return failure("Pegasus is not answering", false);
+        return queued_outcome();
+    };
+    r.run(plans(10));
+    EXPECT_FALSE(r.all.active);
+    EXPECT_EQ(r.all.end, DownloadAll::End::stopped);
+    EXPECT_EQ(r.all.ok, 2);
+    EXPECT_EQ(r.all.done, 6);
+    EXPECT_EQ(r.all.failed.size(), 4u);
+    EXPECT_EQ(r.asked.size(), 6u); // parts 7 to 10 were never tried
+    EXPECT_EQ(r.finished_calls, 1);
+    EXPECT_EQ(r.all.report_title(), "Stopped: 2 of 10 parts queued");
+    const std::string message = r.all.report_message();
+    EXPECT_NE(message.find("Pegasus seems stuck"), std::string::npos) << message;
+    EXPECT_NE(message.find("Parts 3, 4, 5 and 1 more did not queue."), std::string::npos) << message;
+    EXPECT_NE(message.find("2 parts were queued."), std::string::npos) << message;
+    EXPECT_TRUE(ends_with(message, kContinue)) << message;
+}
+
+TEST(DownloadAll, AQueuedPartBreaksTheRowOfFailures)
+{
+    Runner r;
+    r.answer = [](const LinkRef &ref)
+    {
+        const int number = ref.link_index + 1;
+        if (number == 4 || number == 8)
+            return queued_outcome();
+        return failure("not found", false);
+    };
+    r.run(plans(9));
+    EXPECT_EQ(r.all.end, DownloadAll::End::finished_with_failures); // 3 in a row at most
+    EXPECT_EQ(r.all.ok, 2);
+    EXPECT_EQ(r.all.failed.size(), 7u);
+    EXPECT_EQ(r.asked.size(), 9u);
+    const std::string message = r.all.report_message();
+    EXPECT_NE(message.find("Parts 1, 2, 3 and 4 more did not queue. Last reason: not found."), std::string::npos)
+        << message;
+    // The last part failing as the fourth in a row ends the series normally.
+    Runner tail;
+    tail.answer = [](const LinkRef &ref)
+    { return ref.link_index == 0 ? queued_outcome() : failure("not found", false); };
+    tail.run(plans(5));
+    EXPECT_EQ(tail.all.end, DownloadAll::End::finished_with_failures);
+    EXPECT_EQ(tail.all.done, 5);
+}
+
+TEST(DownloadAll, CancelMidWayStopsAfterThePartInFlight)
+{
+    Series s;
+    s.on_start = [&](const LinkRef &ref)
+    {
+        if (ref.link_index == 2)
+            s.all.cancel(); // Circle while part 3 is being queued
+    };
+    s.run(s.parts(10));
+    EXPECT_EQ(s.all.end, DownloadAll::End::cancelled);
+    EXPECT_EQ(s.all.ok, 3); // the part in flight still counts
+    EXPECT_EQ(s.order.size(), 3u);
+    EXPECT_EQ(s.queued.keys.size(), 3u);
+    EXPECT_EQ(s.finished_calls, 1);
+    EXPECT_EQ(s.all.report_title(), "Cancelled: 3 of 10 parts queued");
+    // Cancelling an idle series does nothing.
+    s.all.cancel();
+    EXPECT_FALSE(s.all.active);
+    EXPECT_EQ(s.finished_calls, 1);
+}
+
+TEST(DownloadAll, CancelWhileAPartIsOutWaitsForItsOutcome)
+{
+    Runner r;
+    r.held = true;
+    r.run(plans(5));
+    r.pending[0](queued_outcome());
+    r.all.cancel();
+    EXPECT_TRUE(r.all.active); // part 2 is still out
+    EXPECT_EQ(r.finished_calls, 0);
+    r.pending[1](failure("timed out", true)); // it failed: no wait, no retry, the series ends
+    EXPECT_FALSE(r.all.active);
+    EXPECT_EQ(r.all.end, DownloadAll::End::cancelled);
+    EXPECT_EQ(r.all.ok, 1);
+    EXPECT_EQ(r.asked.size(), 2u);
+    EXPECT_TRUE(r.all.failed.empty());
+    EXPECT_EQ(r.finished_calls, 1);
+    const std::string message = r.all.report_message();
+    EXPECT_NE(message.find("Stopped on your request"), std::string::npos) << message;
+    EXPECT_TRUE(ends_with(message, kContinue)) << message;
+}
+
+TEST(DownloadAll, CancelDuringAWaitEndsAtOnce)
+{
+    Runner r;
+    r.answer = [](const LinkRef &) { return failure("timed out", true); };
+    r.run(plans(4));
+    ASSERT_TRUE(r.all.active);
+    EXPECT_GT(r.all.waiting, 0.0f);
+    r.all.cancel();
+    EXPECT_FALSE(r.all.active);
+    EXPECT_EQ(r.all.end, DownloadAll::End::cancelled);
+    EXPECT_FLOAT_EQ(r.all.waiting, 0.0f);
+    EXPECT_EQ(r.finished_calls, 1);
+    r.frames(100, 1.0f);
+    EXPECT_EQ(r.asked.size(), 1u);
+    EXPECT_EQ(r.all.report_title(), "Cancelled: 0 of 4 parts queued");
+}
+
+TEST(DownloadAll, ACaptureThatStartedIsNotAQueuedPart)
+{
+    LinkStart capture;
+    capture.kind = LinkResult::Kind::capture;
+    EXPECT_EQ(part_failure_reason(capture), "still resolving");
+    Runner r;
+    int calls = 0;
+    r.answer = [&calls, capture](const LinkRef &) { return ++calls == 1 ? capture : queued_outcome(); };
+    r.run(plans(1));
+    EXPECT_TRUE(r.all.active); // asked again after a wait, even though it was not marked transient
+    EXPECT_TRUE(r.queued.empty());
+    EXPECT_EQ(r.all.ok, 0);
+    EXPECT_FLOAT_EQ(r.all.waiting, kFirstBackoff);
+    r.frames(10);
+    EXPECT_EQ(r.all.end, DownloadAll::End::finished);
+    EXPECT_EQ(r.all.ok, 1);
+    EXPECT_EQ(r.queued.size(), 1u);
+    // Never resolving: the part fails with that reason.
+    Runner never;
+    never.answer = [capture](const LinkRef &) { return capture; };
+    never.run(plans(1));
+    never.frames(100);
+    EXPECT_EQ(never.asked.size(), 3u);
+    EXPECT_TRUE(never.queued.empty());
+    ASSERT_EQ(never.all.failed.size(), 1u);
+    EXPECT_EQ(never.all.failed[0].why, "still resolving");
+}
+
+TEST(DownloadAll, FailureReasonsOfTheOtherOutcomes)
+{
+    EXPECT_EQ(part_failure_reason(queued_outcome()), "");
+    EXPECT_EQ(part_failure_reason(failure("timed out", true)), "timed out");
+    LinkStart blocked;
+    blocked.kind = LinkResult::Kind::blocked;
+    EXPECT_EQ(part_failure_reason(blocked), "not supported");
+    blocked.message = "host is down";
+    EXPECT_EQ(part_failure_reason(blocked), "host is down");
+    LinkStart select;
+    select.kind = LinkResult::Kind::select_files;
+    EXPECT_NE(part_failure_reason(select).find("which files"), std::string::npos);
+    LinkStart browser;
+    browser.kind = LinkResult::Kind::browser_opened;
+    EXPECT_NE(part_failure_reason(browser).find("PS5 browser"), std::string::npos);
+}
+
+TEST(DownloadAll, ANewRunIgnoresTheOutcomeOfTheOldOne)
+{
+    Runner r;
+    r.held = true;
+    r.run(plans(3));
+    ASSERT_EQ(r.pending.size(), 1u);
+    DownloadAll::Done old = r.pending[0];
+    r.run(plans(2));
+    old(queued_outcome());
+    EXPECT_EQ(r.all.ok, 0);
+    EXPECT_TRUE(r.queued.empty());
+    EXPECT_EQ(r.all.total, 2);
+    r.pending[1](queued_outcome());
+    EXPECT_EQ(r.all.ok, 1);
+    // A part with no link at all is listed, not a crash.
+    Runner empty;
+    std::vector<PartPlan> parts = plans(2);
+    parts[0].refs.clear();
+    parts[0].hosts.clear();
+    empty.run(std::move(parts));
+    EXPECT_EQ(empty.all.end, DownloadAll::End::finished_with_failures);
+    EXPECT_EQ(empty.all.ok, 1);
+    ASSERT_EQ(empty.all.failed.size(), 1u);
+    EXPECT_EQ(empty.all.failed[0].number, 1);
 }
 
 TEST(DownloadAll, SecondPressSkipsWhatWasQueued)
@@ -159,42 +571,6 @@ TEST(DownloadAll, SecondPressSkipsWhatWasQueued)
     EXPECT_EQ(s.order.size(), 12u);
     EXPECT_EQ(s.queued.keys.size(), 22u);
     EXPECT_EQ(plan_parts(v, viking, s.queued).refs.size(), 0u);
-}
-
-TEST(DownloadAll, FailureAtPartKStopsAndReportsKMinusOne)
-{
-    Series s;
-    s.backend.set_failing_link("pkg25", 6); // part 7
-    s.run(s.parts(22));
-    EXPECT_EQ(s.all.end, DownloadAll::End::failed);
-    EXPECT_EQ(s.all.ok, 6);
-    EXPECT_EQ(s.all.failed_number, 7);
-    EXPECT_EQ(s.order.size(), 7u); // nothing after the failure was tried
-    EXPECT_EQ(s.queued.keys.size(), 6u);
-    EXPECT_EQ(s.finished_calls, 1);
-    EXPECT_EQ(s.all.report_title(), "6 of 22 parts queued");
-    EXPECT_NE(s.all.report_message().find("Stopped at part 7"), std::string::npos);
-    EXPECT_NE(s.all.report_message().find("6 parts were queued before it"), std::string::npos);
-}
-
-TEST(DownloadAll, CancelMidWayStopsAfterThePartInFlight)
-{
-    Series s;
-    s.on_start = [&](const LinkRef &ref)
-    {
-        if (ref.link_index == 2)
-            s.all.cancel(); // Circle while part 3 is being queued
-    };
-    s.run(s.parts(10));
-    EXPECT_EQ(s.all.end, DownloadAll::End::cancelled);
-    EXPECT_EQ(s.all.ok, 3); // the part in flight still counts
-    EXPECT_EQ(s.order.size(), 3u);
-    EXPECT_EQ(s.queued.keys.size(), 3u);
-    EXPECT_EQ(s.finished_calls, 1);
-    EXPECT_EQ(s.all.report_title(), "Cancelled: 3 of 10 parts queued");
-    // Cancelling an idle series does nothing.
-    s.all.cancel();
-    EXPECT_FALSE(s.all.active);
 }
 
 TEST(DownloadAll, IncompleteAndRestartedSetsCarryTheirWarningInTheConfirmText)

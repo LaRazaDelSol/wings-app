@@ -113,6 +113,14 @@ class ConfirmDialog
     {
         return open_;
     }
+    const std::string &title() const
+    {
+        return title_;
+    }
+    const std::string &message() const
+    {
+        return message_;
+    }
     Result update(const hui::InputFrame &input, float dt, hui::ui::Feedback &feedback);
     void draw(Context &ctx, Frame &frame) const;
 

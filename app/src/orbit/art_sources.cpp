@@ -85,6 +85,48 @@ std::string choose_hero(const PopularityIndex &index, const std::vector<std::str
     return {};
 }
 
+std::string igdb_full_url(std::string_view low_url)
+{
+    constexpr std::string_view kPrefix = "https://images.igdb.com/igdb/image/upload/";
+    constexpr std::string_view kSmall = "t_screenshot_big/";
+    if (low_url.substr(0, kPrefix.size()) != kPrefix)
+        return {};
+    const std::string_view rest = low_url.substr(kPrefix.size());
+    if (rest.substr(0, kSmall.size()) != kSmall || rest.size() == kSmall.size())
+        return {};
+    return std::string(kPrefix) + "t_1080p/" + std::string(rest.substr(kSmall.size()));
+}
+
+HeroPick pick_hero(const PopularityIndex &index, const std::vector<std::string> &title_ids, HeroSource source,
+                   bool use_second)
+{
+    HeroPick pick;
+    pick.full = choose_hero(index, title_ids, source);
+    // The small IGDB picture is not used when only Prosperopatches art is wanted.
+    if (source == HeroSource::all)
+        pick.low = index.hero_low(title_ids);
+    const std::string igdb = igdb_full_url(pick.low);
+    pick.has_both = is_prospero_pic0_url(pick.full) && !igdb.empty();
+    if (pick.has_both)
+    {
+        if (use_second)
+        {
+            pick.second = true;
+            pick.full = igdb; // its small stand-in is the same picture: the swap is only sharpening
+        }
+        else
+        {
+            pick.low.clear(); // Prosperopatches' picture alone: no other picture shown first
+        }
+    }
+    return pick;
+}
+
+std::string hero_art_key(const std::string &art_key, bool second)
+{
+    return second ? art_key + kHeroSecondTail : art_key;
+}
+
 bool HeroPrefetchGate::update(const std::string &game_id, double now_s)
 {
     if (game_id.empty())

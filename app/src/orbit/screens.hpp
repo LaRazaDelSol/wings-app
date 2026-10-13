@@ -37,6 +37,7 @@
 #include "ui/glyphs.hpp"
 #include "ui/theme.hpp"
 
+#include <map>
 #include <memory>
 #include <cstdint>
 #include <functional>
@@ -455,6 +456,10 @@ class StoreScreen final : public Screen
     {
         return confirm_.is_open();
     }
+    const ConfirmDialog &confirm_dialog() const
+    {
+        return confirm_;
+    }
     // The focused tile's position and what it shows (tests).
     int focus_index() const
     {
@@ -528,8 +533,9 @@ class StoreScreen final : public Screen
     struct CarouselArt
     {
         std::string key;      // art key of the game's cover ("pkg:<id>"), shared with the tile and the page
+        std::string hero_key; // the key its 16:9 pictures are cached under (key, or key + "~b": art_sources.hpp)
         std::string low_url;  // the small 16:9 picture ("" none)
-        std::string hero_url; // the full 16:9 picture ("" none); drawn only when there is no small one
+        std::string hero_url; // the full 16:9 picture ("" none); drawn over the small one once it is there
     };
     ui::Rect tile_rect(int index) const;
     // Extra height above grid row 0 while the carousel is shown (0 otherwise: the grid is exactly as it was).
@@ -541,7 +547,9 @@ class StoreScreen final : public Screen
     void update_carousel_input(const InputFrame &input, Feedback &feedback, Intent &intent);
     bool toggle_carousel_favourite();
     void draw_carousel(hui::gfx::DrawList &list) const;
-    const Artwork *carousel_slide_art(const CarouselArt &art, bool allow_full) const;
+    // The slide's full / small picture if ready (asks for it otherwise). Null: none, or not yet.
+    const Artwork *carousel_full_art(const CarouselArt &art) const;
+    const Artwork *carousel_low_art(const CarouselArt &art) const;
     void refresh_prefs();
     void rebuild();
     void read_facts(std::uint64_t serial, std::size_t from);
@@ -619,7 +627,7 @@ class StoreScreen final : public Screen
     bool carousel_on_ = false;  // shown (default grid view, switch on, at least one game found)
     bool in_carousel_ = false;  // the focus is on the carousel's buttons
     int car_slide_ = 0;         // index into carousel_games_
-    int car_button_ = 0;        // kCarouselInstall / kCarouselFavourite
+    int car_button_ = 0;        // kCarouselView / kCarouselFavourite
     std::vector<int> carousel_games_;
     std::vector<CarouselArt> carousel_art_; // per carousel game
     CarouselClock car_clock_;
@@ -628,6 +636,9 @@ class StoreScreen final : public Screen
     ui::Ease car_in_;           // a new slide fades in
     float car_on_slide_s_ = 0.0f;              // seconds the current slide has been up
     std::vector<std::string> car_prefetched_;  // picture addresses already sent to the disk cache
+    // Per game (its art key): the picture shown now is the IGDB one (true) or Prosperopatches' (false); a page
+    // that opens flips it for the next time (art_sources.hpp, pick_hero). Memory only.
+    std::map<std::string, bool> hero_second_;
     std::uint64_t seen_editorial_ = ~0ull;
     int index_ = 0;
     ui::Ease scroll_;

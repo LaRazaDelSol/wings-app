@@ -184,16 +184,19 @@ void ConfirmDialog::draw(Context &ctx, Frame &frame) const
     const float a = std::clamp(in_.value, 0.0f, 1.0f);
     draw_scrim(list, a);
     const float width = 900.0f;
-    // Measure the message to size the panel.
-    const float message_lines = 5.0f;
-    const float height = 72.0f + 50.0f + message_lines * 36.0f + 40.0f + ui::kButtonHeight + 44.0f;
+    // Measure the message to size the panel: room for five lines at least, and
+    // taller for a longer message (a "Download all parts" report) up to 14.
+    const int message_lines = std::clamp(
+        static_cast<int>(type.regular.font->wrap(message_, 25.0f, width - 96.0f).size()), 5, 14);
+    const float height = 72.0f + 50.0f + static_cast<float>(message_lines) * 36.0f + 40.0f +
+                         ui::kButtonHeight + 44.0f;
     const ui::Rect r{960.0f - width * 0.5f, 540.0f - height * 0.5f + (1.0f - a) * 20.0f, width, height};
     list.push_opacity(a);
     ui::modal(list, r);
     ui::text_fit(list, type.light, title_, r.x + 48.0f, r.y + 82.0f, 38.0f, r.w - 96.0f,
                  ui::color::text);
     ui::paragraph(list, type.regular, message_, r.x + 48.0f, r.y + 140.0f, 25.0f, r.w - 96.0f,
-                  36.0f, ui::color::text2, 5);
+                  36.0f, ui::color::text2, message_lines);
     const float y = r.y + r.h - 44.0f - ui::kButtonHeight;
     const ui::Rect confirm{r.x + r.w - 48.0f - kButtonWidth, y, kButtonWidth, ui::kButtonHeight};
     const ui::Rect cancel{confirm.x - 20.0f - kButtonWidth, y, kButtonWidth, ui::kButtonHeight};

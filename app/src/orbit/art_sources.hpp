@@ -47,6 +47,30 @@ bool hero_url_allowed(std::string_view url, HeroSource source);
 // The 16:9 picture address for a game: the first of its title ids whose record has one the source allows. "" none.
 std::string choose_hero(const PopularityIndex &index, const std::vector<std::string> &title_ids, HeroSource source);
 
+// Two equally good pictures: for many games the data has Prosperopatches' picture (hero) AND a different IGDB
+// screenshot (heroLow, small). Showing the small one first and then swapping to the other made the page flash
+// one picture for half a second before another. Instead the page (and the Store's hero shot) shows ONE of them,
+// whole and sharp, and the choice alternates: the picture a game showed last is not the one it shows next time.
+// The IGDB variant lives under its own art key (art_key + kHeroSecondTail) so the two never share a texture.
+constexpr const char *kHeroSecondTail = "~b";
+// .../t_screenshot_big/<id>.jpg -> .../t_1080p/<id>.jpg (the same IGDB picture at full size); "" for any other
+// address.
+std::string igdb_full_url(std::string_view low_url);
+
+struct HeroPick
+{
+    std::string full;      // the picture to show ("" none)
+    std::string low;       // a small stand-in of THE SAME picture ("" none)
+    bool second = false;   // the IGDB variant: its art key carries kHeroSecondTail
+    bool has_both = false; // the game has the two different pictures, so the choice alternates
+};
+// use_second picks the IGDB picture when the game has both; otherwise it is Prosperopatches'. A game with only one
+// kind of picture gets it, with its own small stand-in when the data has one (as before).
+HeroPick pick_hero(const PopularityIndex &index, const std::vector<std::string> &title_ids, HeroSource source,
+                   bool use_second);
+// The art key a pick's pictures are cached under.
+std::string hero_art_key(const std::string &art_key, bool second);
+
 // Decides when the Store grid fetches a game's 16:9 picture ahead of time (the focused tile). The picture goes to
 // the disk cache only, so that opening the page finds it there. Rules: focus has to rest on the same game for
 // `kDwellS` (scrolling past fetches nothing), a game is fetched once per time focus lands on it, and at most

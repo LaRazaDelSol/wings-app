@@ -529,11 +529,9 @@ TEST(StoreGrid, CarouselShowsTheFeaturedGamesTheCatalogueHas)
     ASSERT_TRUE(grid.carousel_visible());
     EXPECT_EQ(grid.carousel_count(), 2); // PPSA99999 is not in this catalogue
     EXPECT_EQ(grid.shown_count(), 25);   // the grid itself is unchanged
-    EXPECT_FALSE(grid.on_carousel());
-    // Up from the first row enters the carousel, on Install.
-    h.move(Direction::up);
+    // The Store opens on the hero shot, on View game.
     ASSERT_TRUE(grid.on_carousel());
-    EXPECT_EQ(grid.carousel_button(), kCarouselInstall);
+    EXPECT_EQ(grid.carousel_button(), kCarouselView);
     EXPECT_EQ(grid.carousel_slide(), 0);
     h.move(Direction::right);
     EXPECT_EQ(grid.carousel_button(), kCarouselFavourite);
@@ -541,13 +539,14 @@ TEST(StoreGrid, CarouselShowsTheFeaturedGamesTheCatalogueHas)
     EXPECT_EQ(grid.carousel_slide(), 1);
     EXPECT_EQ(grid.carousel_button(), kCarouselFavourite);
     h.move(Direction::left);
-    EXPECT_EQ(grid.carousel_button(), kCarouselInstall);
+    EXPECT_EQ(grid.carousel_button(), kCarouselView);
     EXPECT_EQ(grid.carousel_slide(), 1);
-    // Down returns to the grid; Up and Cross on Install open the slide's game page.
+    // Down goes to the grid; Up from its first row comes back, and Cross on View game opens the slide's page.
     h.move(Direction::down);
     EXPECT_FALSE(grid.on_carousel());
     h.move(Direction::up);
     ASSERT_TRUE(grid.on_carousel());
+    EXPECT_EQ(grid.carousel_button(), kCarouselView);
     h.press(hui::Action::confirm);
     EXPECT_TRUE(grid.detail_open());
 }

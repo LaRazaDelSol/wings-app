@@ -209,6 +209,7 @@ struct GameHeaderState
     float focus[kHeaderButtons] = {0.0f, 0.0f, 0.0f};
     std::string hero_url;       // registered for this page ("" none)
     std::string hero_low_url;   // the small stand-in registered for this page ("" none)
+    std::string hero_key;       // the art key the hero pictures were registered under ("" none; art_sources.hpp)
     bool hero_resolved = false; // the popularity index has been asked for this page
     bool hero_cached = false;   // the hero_url's file is already on disk (hero_is_cached, set with hero_url)
     float open_s = 0.0f;        // seconds since the page opened (update)

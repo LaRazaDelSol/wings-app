@@ -2,17 +2,18 @@
 // grid offset it adds. Pure and tested on the host; drawing and input wiring are in store_screen.cpp.
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// The carousel is the project's featured games (editorial.hpp, curated.v1.json), shown above the Store grid in
-// its default view only. Each slide is one game of the player's OWN catalogue (found by title id; ids they do
-// not have are hidden) with a 16:9 picture, the title, an Install button (opens the game page, as Cross on the
-// tile does) and a Favourite button.
+// The carousel is the project's featured games (editorial.hpp, curated.v1.json), the Store's hero shot in its
+// default view only: the first thing on the page, full width, with the grid below it. Each slide is one game of
+// the player's OWN catalogue (found by title id; ids they do not have are hidden) with a 16:9 picture, the title,
+// a View game button (opens the game page, as Cross on the tile does) and a heart (Favourite).
 //
 // Pad rules (the focus is always on one of the two buttons; the slide is whatever the buttons belong to):
-//   Right on Install   -> Favourite            Left on Favourite -> Install
-//   Right on Favourite -> next slide, focus stays on Favourite   (the last slide wraps to the first)
-//   Left on Install    -> previous slide, focus stays on Install (the first slide wraps to the last)
-//   Down returns to the grid (its first row), Up leaves to the top bar. Entering from the grid (Up from row 0)
-//   lands on Install. Holding Right or Left therefore walks through the slides after two steps.
+//   Right on View game -> heart                Left on heart -> View game
+//   Right on heart     -> next slide, focus stays on the heart   (the last slide wraps to the first)
+//   Left on View game  -> previous slide, focus stays on View game (the first slide wraps to the last)
+//   Down scrolls the page up to the grid (its header and first row), Up leaves to the top bar. Up from the grid's
+//   first row comes back to the hero, on View game. The Store opens with the focus on the hero. Holding Right or
+//   Left therefore walks through the slides after two steps.
 
 #pragma once
 
@@ -29,12 +30,12 @@ namespace orbit
 constexpr std::size_t kCarouselMaxItems = 8;
 constexpr float kCarouselAdvanceS = 8.0f;
 
-// Geometry (virtual 1920 x 1080). The slide is as wide as the grid; its picture is 16:9 at the slide's height
-// on the right and fades into the slide's plate at its left edge, where the words are.
-constexpr float kCarouselHeight = 400.0f;
-constexpr float kCarouselGap = 30.0f;                              // slide to the first grid row
-constexpr float kCarouselExtra = kCarouselHeight + kCarouselGap;   // what the grid is pushed down by
-constexpr float kCarouselArtAspect = 16.0f / 9.0f;
+// Geometry (virtual 1920 x 1080). The hero is the page's first viewport: the picture fills the whole width from
+// the top of the screen (under the app bar) down to kCarouselArtH and fades into the page at its foot; the title
+// and the buttons sit over it at the left. The grid is pushed down by kCarouselExtra, so its header and the top of
+// its first row peek in under the hero (as Orbit's first rail does); Down scrolls the page up by that much.
+constexpr float kCarouselArtH = 800.0f;
+constexpr float kCarouselExtra = 590.0f; // what the grid is pushed down by
 
 // The games of the curated ids, in the file's order: the first game of the player's catalogue that carries each
 // id (a game that comes up twice is kept once), at most kCarouselMaxItems. Indexes into `games`.
@@ -52,7 +53,7 @@ constexpr std::size_t kCarouselFallbackItems = 5;
 std::vector<int> pick_most_popular(const std::vector<long> &keys, std::size_t count);
 
 // The two focus stops.
-constexpr int kCarouselInstall = 0;
+constexpr int kCarouselView = 0;
 constexpr int kCarouselFavourite = 1;
 
 struct CarouselStep
@@ -81,8 +82,13 @@ class CarouselClock
     float elapsed_ = 0.0f;
 };
 
-// The grid's scroll target (px) with `extra` px of carousel above row 0. The focused row sits second from the
-// top once the list scrolls; with extra == 0 this is exactly the grid's own rule: max(0, (row - 1) * pitch).
+// The grid's scroll target (px) with `extra` px of carousel above row 0. Row 0 scrolls the carousel away (the
+// header and the first row then sit where they do without one); from there the focused row sits second from the
+// top once the list scrolls. With extra == 0 this is exactly the grid's own rule: max(0, (row - 1) * pitch).
 float grid_scroll_target(int row, float pitch, float extra);
+
+// How much of the hero is left at a page scroll (1 at rest, 0 once it is far enough up to be out of the way of
+// the header that rides up with the page): the hero fades as it slides, so it never meets the header's words.
+float carousel_fade(float scroll);
 
 } // namespace orbit

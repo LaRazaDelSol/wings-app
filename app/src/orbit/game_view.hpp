@@ -234,10 +234,19 @@ MirrorCard mirror_card(const GameView &view, int mirror, const LinkPrefs &prefs,
 // The Best card: "Debrid · USA · BP 4.xx · 1 file" and the reason.
 std::string best_summary(const GameView &view);
 
+// The part number a link has inside its mirror (by position when unnumbered); 0 not in it.
+int mirror_part_number(const GamePage &page, int mirror, const LinkRef &ref);
+
 // "Download all parts": what would be queued and how to say it.
 struct PartsPlan
 {
     std::vector<LinkRef> refs; // to queue, catalogue order, already-started ones left out
+    // Parallel to refs: each part's number, and the same part on the release's
+    // other hosts (best tier first, then host A to Z) to try when it keeps
+    // failing. Only between sets numbered 1..N exactly alike; never guessed.
+    std::vector<int> numbers;
+    std::vector<std::vector<LinkRef>> alternates;
+    std::vector<std::vector<std::string>> alternate_hosts;
     int total = 0;             // links in the set
     int skipped = 0;           // already started by this app
     bool one_at_a_time = false; // the parts open the PS5 browser: one per check, never all at once

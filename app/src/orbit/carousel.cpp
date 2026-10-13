@@ -65,7 +65,7 @@ CarouselStep carousel_step(int slide, int button, int count, hui::Direction nav)
     step.button = button;
     if (nav == hui::Direction::right)
     {
-        if (button == kCarouselInstall)
+        if (button == kCarouselView)
         {
             step.button = kCarouselFavourite;
             step.moved = true;
@@ -80,7 +80,7 @@ CarouselStep carousel_step(int slide, int button, int count, hui::Direction nav)
     {
         if (button == kCarouselFavourite)
         {
-            step.button = kCarouselInstall;
+            step.button = kCarouselView;
             step.moved = true;
         }
         else if (count > 1)
@@ -108,9 +108,12 @@ bool CarouselClock::update(float dt, bool paused, int count)
 
 float grid_scroll_target(int row, float pitch, float extra)
 {
-    if (row <= 0)
-        return 0.0f;
-    return std::max(0.0f, static_cast<float>(row - 1) * pitch + extra);
+    return extra + std::max(0.0f, static_cast<float>(row - 1) * pitch);
+}
+
+float carousel_fade(float scroll)
+{
+    return std::clamp(1.0f - scroll / (kCarouselExtra * 0.8f), 0.0f, 1.0f);
 }
 
 } // namespace orbit

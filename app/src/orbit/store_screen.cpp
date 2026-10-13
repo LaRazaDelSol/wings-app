@@ -171,19 +171,6 @@ int find_row(const GameView &view, PageRowKind kind)
     return -1;
 }
 
-// The part number a link has inside its mirror (by position when unnumbered).
-int part_number(const GamePage &page, int mirror, const LinkRef &ref)
-{
-    const Mirror &m = page.mirrors[static_cast<std::size_t>(mirror)];
-    for (std::size_t i = 0; i < m.links.size(); ++i)
-    {
-        const GameLink &l = page.links[static_cast<std::size_t>(m.links[i])];
-        if (l.index == ref.link_index && page.packages[static_cast<std::size_t>(l.package)].id == ref.package_id)
-            return i < m.numbers.size() ? m.numbers[i] : static_cast<int>(i) + 1;
-    }
-    return 0;
-}
-
 ui::Color fit_color(FwFit fit)
 {
     switch (fit)
@@ -218,7 +205,7 @@ void StoreScreen::focus()
 bool StoreScreen::modal() const
 {
     return prompt_.is_open() || confirm_.is_open() || list_.is_open() || folder_ask_.is_open() ||
-           panel_ != Panel::none ||
+           panel_ != Panel::none || batch_.active ||
            ctx_.store.link_action().busy;
 }
 
@@ -427,12 +414,16 @@ void StoreScreen::rebuild()
                 const GameGroup &game = games_.games[static_cast<std::size_t>(g)];
                 CarouselArt art;
                 art.key = "pkg:" + catalogue.packages[static_cast<std::size_t>(art_package(game, catalogue.packages))].id;
+                art.hero_key = art.key;
                 if (pop_index_ != nullptr)
                 {
-                    art.hero_url = choose_hero(*pop_index_, game.title_ids, source);
-                    // The small stand-in is IGDB's: not used when only Prosperopatches art is wanted.
-                    if (source == HeroSource::all)
-                        art.low_url = pop_index_->hero_low(game.title_ids);
+                    // One picture of the two (art_sources.hpp): the one this game shows now, whole and sharp.
+                    const auto shown = hero_second_.find(art.key);
+                    const HeroPick pick = pick_hero(*pop_index_, game.title_ids, source,
+                                                    shown != hero_second_.end() && shown->second);
+                    art.hero_url = pick.full;
+                    art.low_url = pick.low;
+                    art.hero_key = hero_art_key(art.key, pick.second);
                 }
                 carousel_art_.push_back(std::move(art));
             }
@@ -444,11 +435,15 @@ void StoreScreen::rebuild()
         if (!carousel_on_)
         {
             in_carousel_ = false;
-            car_button_ = kCarouselInstall;
+            car_button_ = kCarouselView;
         }
         if (carousel_on_ != was_on)
         {
-            scroll_.snap(0.0f); // the grid moved by the carousel's height: no sliding from the old place
+            // The hero is the first thing the Store shows: the focus starts on it. The grid moved by the
+            // carousel's height: no sliding from the old place.
+            in_carousel_ = carousel_on_;
+            car_button_ = kCarouselView;
+            scroll_.snap(0.0f);
             car_clock_.restart();
             car_on_slide_s_ = 0.0f;
         }
@@ -494,7 +489,16 @@ void StoreScreen::prefetch_hero(float dt, bool focused)
         return;
     const GameGroup &g = games_.games[static_cast<std::size_t>(tiles_[static_cast<std::size_t>(index_)].game)];
     const HeroSource source = prefs_source_ != nullptr ? prefs_source_->hero_source : HeroSource::all;
-    const std::string url = choose_hero(*pop_index_, g.title_ids, source);
+    // The picture the page will show (the alternating choice, art_sources.hpp), not the other one.
+    const GameTile &tile = tiles_[static_cast<std::size_t>(index_)];
+    const Snapshot &snapshot = ctx_.store.state();
+    bool second = false;
+    if (tile.art_package >= 0 && tile.art_package < static_cast<int>(snapshot.packages.size()))
+    {
+        const auto shown = hero_second_.find("pkg:" + snapshot.packages[static_cast<std::size_t>(tile.art_package)].id);
+        second = shown != hero_second_.end() && shown->second;
+    }
+    const std::string url = pick_hero(*pop_index_, g.title_ids, source, second).full;
     if (!url.empty())
         ctx_.prefetch_hero(url);
 }
@@ -1068,7 +1072,17 @@ void StoreScreen::update_grid(const InputFrame &input, Feedback &feedback, Inten
         }
         else if (input.nav == Direction::up)
         {
-            intent.kind = Intent::Kind::top_bar;
+            if (carousel_on_ && !carousel_games_.empty())
+            {
+                on_button_ = false;
+                in_carousel_ = true;
+                car_button_ = kCarouselView;
+                feedback.play(hui::audio::Cue::focus);
+            }
+            else
+            {
+                intent.kind = Intent::Kind::top_bar;
+            }
         }
         else if (input.nav != Direction::none)
         {
@@ -1131,9 +1145,9 @@ void StoreScreen::update_grid(const InputFrame &input, Feedback &feedback, Inten
         }
         else if (carousel_on_ && !carousel_games_.empty())
         {
-            // Up from the first row enters the carousel (on Install).
+            // Up from the first row comes back to the hero (on View game).
             in_carousel_ = true;
-            car_button_ = kCarouselInstall;
+            car_button_ = kCarouselView;
             feedback.play(hui::audio::Cue::focus);
             return;
         }
@@ -1173,7 +1187,7 @@ void StoreScreen::update_grid(const InputFrame &input, Feedback &feedback, Inten
 
 // ---- the carousel (carousel.hpp) ----
 
-// Pad rules are documented in carousel.hpp. Cross on Install opens the game's page, exactly as Cross on its tile.
+// Pad rules are documented in carousel.hpp. Cross on View game opens the game's page, exactly as Cross on its tile.
 void StoreScreen::update_carousel_input(const InputFrame &input, Feedback &feedback, Intent &intent)
 {
     const int count = static_cast<int>(carousel_games_.size());
@@ -1247,8 +1261,9 @@ bool StoreScreen::toggle_carousel_favourite()
 }
 
 // Every frame: focus fades, the auto-advance clock, the slide's pictures. Art memory is bounded by the ArtCache's
-// background budget (two textures, shared with the game page): only the current slide and the next one are asked
-// for, and the next one only once the current one is there. The slide after that goes to the disk cache only.
+// background budget (three textures, shared with the game page): the current slide's small and full pictures and
+// the next slide's small one, and the next one only once the current full one is there. The slide after that goes
+// to the disk cache only.
 void StoreScreen::update_carousel(float dt, bool focused)
 {
     const bool on = carousel_on_ && view_ == View::grid && !carousel_games_.empty();
@@ -1285,18 +1300,22 @@ void StoreScreen::update_carousel(float dt, bool focused)
     const auto announce = [&urls](const CarouselArt &art, bool allow_full)
     {
         if (!art.low_url.empty())
-            urls.set_low(art.key, art.low_url);
-        else if (allow_full && !art.hero_url.empty())
-            urls.set(art.key, art.hero_url);
+            urls.set_low(art.hero_key, art.low_url);
+        if (allow_full && !art.hero_url.empty())
+            urls.set(art.hero_key, art.hero_url);
     };
     announce(carousel_art_[cur], true);
-    const Artwork *shown = carousel_slide_art(carousel_art_[cur], true);
-    // The next slide's small picture is loaded once the current one is up (or has had its time), so the worker
-    // never serves it first. Two textures in all: the cache keeps two background pictures and no more.
-    if (count > 1 && !carousel_art_[next].low_url.empty() && (shown != nullptr || car_on_slide_s_ > 2.0f))
+    // The full picture is asked for first and the small one after it: the worker serves the newest request first,
+    // so the small one is up first and the full one fades in over it (as on the game page).
+    const Artwork *shown = carousel_full_art(carousel_art_[cur]);
+    if (shown == nullptr)
+        carousel_low_art(carousel_art_[cur]);
+    // The next slide's small picture is loaded once the current full one is up (or has had its time), so the
+    // worker never serves it first. Three textures in all: the cache keeps three background pictures and no more.
+    if (count > 1 && !carousel_art_[next].low_url.empty() && (shown != nullptr || car_on_slide_s_ > 3.0f))
     {
         announce(carousel_art_[next], false);
-        carousel_slide_art(carousel_art_[next], false);
+        carousel_low_art(carousel_art_[next]);
     }
     // The slide after that is only fetched into the disk cache, once.
     if (count > 2 && ctx_.prefetch_hero && next != after && after != cur)
@@ -1313,15 +1332,16 @@ void StoreScreen::update_carousel(float dt, bool focused)
     }
 }
 
-// The slide's 16:9 picture if it is ready (asks for it otherwise): the small one when there is one, else the full
-// one (only when allow_full: the current slide). Null: none, not yet, or not a usable shape.
-const Artwork *StoreScreen::carousel_slide_art(const CarouselArt &art, bool allow_full) const
+// The slide's full 16:9 picture if it is ready (asks for it otherwise). Null: none, or not yet.
+const Artwork *StoreScreen::carousel_full_art(const CarouselArt &art) const
 {
-    if (!art.low_url.empty())
-        return ctx_.art.get(art.key, ArtKind::hero_low);
-    if (allow_full && !art.hero_url.empty())
-        return ctx_.art.get(art.key, ArtKind::hero);
-    return nullptr;
+    return art.hero_url.empty() ? nullptr : ctx_.art.get(art.hero_key, ArtKind::hero);
+}
+
+// The slide's small 16:9 picture if it is ready (asks for it otherwise). Null: none, or not yet.
+const Artwork *StoreScreen::carousel_low_art(const CarouselArt &art) const
+{
+    return art.low_url.empty() ? nullptr : ctx_.art.get(art.hero_key, ArtKind::hero_low);
 }
 
 // The existing "download this link" flow for one (packageId, linkIndex).
@@ -1512,11 +1532,31 @@ void StoreScreen::start_batch(const std::string &service)
     if (folder_ask_.guard(ctx_, [this, service] { start_batch(service); }))
         return; // asked once for the whole set, not per part
     popularity_hub().count_download(page_.title_ids);
-    std::vector<int> numbers;
-    for (const LinkRef &ref : parts_plan_.refs)
-        numbers.push_back(part_number(page_.page, parts_mirror_, ref));
+    std::vector<PartPlan> parts;
+    parts.reserve(parts_plan_.refs.size());
+    for (std::size_t i = 0; i < parts_plan_.refs.size(); ++i)
+    {
+        PartPlan part;
+        part.number = i < parts_plan_.numbers.size()
+                          ? parts_plan_.numbers[i]
+                          : mirror_part_number(page_.page, parts_mirror_, parts_plan_.refs[i]);
+        part.refs.push_back(parts_plan_.refs[i]);
+        part.hosts.push_back(parts_plan_.host);
+        if (i < parts_plan_.alternates.size())
+        {
+            const std::vector<LinkRef> &others = parts_plan_.alternates[i];
+            const std::vector<std::string> *names =
+                i < parts_plan_.alternate_hosts.size() ? &parts_plan_.alternate_hosts[i] : nullptr;
+            for (std::size_t a = 0; a < others.size(); ++a)
+            {
+                part.refs.push_back(others[a]);
+                part.hosts.push_back(names != nullptr && a < names->size() ? (*names)[a] : std::string());
+            }
+        }
+        parts.push_back(std::move(part));
+    }
     batch_.begin(
-        parts_plan_.refs, std::move(numbers), parts_plan_.host,
+        std::move(parts), parts_plan_.host,
         [this, service](const LinkRef &ref, DownloadAll::Done done)
         { ctx_.store.start_link(ref.package_id, ref.link_index, service, std::move(done)); },
         [this](const LinkRef &ref)
@@ -1803,7 +1843,7 @@ void StoreScreen::update_flow(Feedback &, Intent &intent)
     }
 }
 
-Intent StoreScreen::update(const InputFrame &input, float dt, Feedback &feedback, bool focused)
+Intent StoreScreen::update(const InputFrame &frame_input, float dt, Feedback &feedback, bool focused)
 {
     Intent intent;
     const Snapshot &state = ctx_.store.state();
@@ -1826,19 +1866,27 @@ Intent StoreScreen::update(const InputFrame &input, float dt, Feedback &feedback
     // The first-download folder question takes the whole input while it is open.
     if (folder_ask_.is_open())
     {
-        folder_ask_.update(ctx_, input, dt, feedback);
+        folder_ask_.update(ctx_, frame_input, dt, feedback);
         return intent;
     }
 
-    // Circle stops "Download all parts" after the part in flight.
-    if (batch_.active && input.is_pressed(Action::back))
+    // Circle stops "Download all parts": a wait between attempts ends at once, a
+    // capture the part waits for is let go. The press is used up here, so it
+    // neither closes the report cancel() may open nor leaves the page.
+    bool stop_pressed = false;
+    if (batch_.active && frame_input.is_pressed(Action::back))
+    {
         batch_.cancel();
+        ctx_.store.stop_series();
+        stop_pressed = true;
+    }
+    const InputFrame &input = stop_pressed ? kIdle : frame_input;
     // Panels: the one that is open takes the whole input.
     const bool had_prompt = prompt_.is_open();
     const bool had_confirm = confirm_.is_open();
     const bool had_list = list_.is_open();
     const bool had_panel = panel_ != Panel::none;
-    const bool busy = ctx_.store.link_action().busy;
+    const bool busy = ctx_.store.link_action().busy || batch_.active;
 
     const TextPrompt::Result typed = prompt_.update(had_prompt ? input : kIdle, dt, feedback);
     if (typed == TextPrompt::Result::accepted)
@@ -1969,6 +2017,9 @@ Intent StoreScreen::update(const InputFrame &input, float dt, Feedback &feedback
     panel_in_.update(dt, 20.0f);
 
     const bool panel = had_prompt || had_confirm || had_list || had_panel || busy;
+    // "Download all parts" counts its waits between attempts down every frame. After
+    // the dialogs: a report it opens is not answered by this frame's press.
+    batch_.tick(dt);
     update_flow(feedback, intent);
     if (!panel && focused && state.online())
     {
@@ -2020,16 +2071,20 @@ Intent StoreScreen::update(const InputFrame &input, float dt, Feedback &feedback
             header_.hero_resolved = true;
             // Settings > Art sources: every source, or only the PS5's own background (Prosperopatches).
             const HeroSource source = prefs_source_ != nullptr ? prefs_source_->hero_source : HeroSource::all;
-            const std::string url = choose_hero(*pop_index_, page_.title_ids, source);
-            if (!url.empty() && hero_urls().set(page_.art_key, url))
+            // One picture of the two (art_sources.hpp): the one the Store's hero shot / this game showed last,
+            // then the other one the next time the page opens.
+            const bool second = hero_second_[page_.art_key];
+            const HeroPick pick = pick_hero(*pop_index_, page_.title_ids, source, second);
+            header_.hero_key = hero_art_key(page_.art_key, pick.second);
+            if (!pick.full.empty() && hero_urls().set(header_.hero_key, pick.full))
             {
-                header_.hero_url = url;
-                header_.hero_cached = hero_is_cached(url);
+                header_.hero_url = pick.full;
+                header_.hero_cached = hero_is_cached(pick.full);
             }
-            // The small stand-in is IGDB's: not used when only Prosperopatches art is wanted.
-            const std::string low = source == HeroSource::all ? pop_index_->hero_low(page_.title_ids) : std::string();
-            if (!low.empty() && hero_urls().set_low(page_.art_key, low))
-                header_.hero_low_url = low;
+            if (!pick.low.empty() && hero_urls().set_low(header_.hero_key, pick.low))
+                header_.hero_low_url = pick.low;
+            if (pick.has_both)
+                hero_second_[page_.art_key] = !second;
         }
         // No record in the index: ask for the live Steam review summary (idempotent, one worker, cached).
         if (page_.loaded && pop_index_ != nullptr && pop_index_->best(page_.title_ids) == nullptr)
@@ -2249,9 +2304,11 @@ void StoreScreen::draw_tile_cell(hui::gfx::DrawList &list, const GameTile &tile,
     }
 }
 
-// The curated carousel: a plate as wide as the grid, the game's 16:9 picture on its right (uniform scale, the
-// overflow cropped, fading into the plate at its left edge so no box edge shows), the title, Install and
-// Favourite at the left, the slide dots under them. Neutral chrome (DESIGN-colour.md): the only colour is the art.
+// The curated carousel, the Store's hero shot: the game's 16:9 picture over the whole width from the top of the
+// screen (uniform scale, the overflow cropped, fading into the page at its foot so no edge shows), the title and
+// View game / heart over it at the left, the slide dots under them. The page slides up as one piece (the header
+// and the first row ride up behind it) and the hero fades out before it reaches them. Neutral chrome
+// (DESIGN-colour.md): the only colour is the art.
 void StoreScreen::draw_carousel(hui::gfx::DrawList &list) const
 {
     const ui::Type &type = ctx_.type;
@@ -2260,60 +2317,90 @@ void StoreScreen::draw_carousel(hui::gfx::DrawList &list) const
     const int slide = std::clamp(car_slide_, 0, count - 1);
     const GameGroup &game = games_.games[static_cast<std::size_t>(carousel_games_[static_cast<std::size_t>(slide)])];
     const CarouselArt &art = carousel_art_[static_cast<std::size_t>(slide)];
-    const float focus = std::clamp(car_focus_.value, 0.0f, 1.0f);
-    ui::Rect r{kGridLeft, kGridTop - scroll_.value, 5.0f * kTile + 4.0f * kGap, kCarouselHeight};
-    if (r.y + r.h < kGridTop - 24.0f)
+    const float scroll = scroll_.value;
+    const float fade = carousel_fade(scroll);
+    if (fade < 0.01f)
         return;
-    r = r.inset(-6.0f * focus); // lifts a little with the focus, as a tile does
-    const ui::Color plate = ui::color::night2;
-    list.rounded_rect(r, ui::kArtRadius, plate);
-    const float art_w = r.h * kCarouselArtAspect;
-    const ui::Rect box{r.x + r.w - art_w, r.y, art_w, r.h};
+    const float focus = std::clamp(car_focus_.value, 0.0f, 1.0f);
     const auto fade_in = [](const Artwork &a)
     { return std::clamp(static_cast<float>((now_seconds() - a.ready_at) / 0.4), 0.0f, 1.0f); };
+    const ui::Color night = ui::color::night1;
+    const ui::Rect band{0.0f, 0.0f, 1920.0f, kCarouselArtH};
+
+    list.push_opacity(fade);
+    list.push_transform(1.0f, 0.0f, 0.0f, 0.0f, -scroll);
+    list.gradient_rect(band, 0.0f, ui::color::night2, night);
 
     list.push_opacity(0.2f + 0.8f * std::clamp(car_in_.value, 0.0f, 1.0f));
+    // The full picture over the small one (until it is fully faded in), the cover's wash when there is neither.
     float picture = 0.0f;
-    if (const Artwork *pic = carousel_slide_art(art, true))
+    const Artwork *full = carousel_full_art(art);
+    const HeroPlacement full_at = full != nullptr ? place_hero(full->width, full->height, band) : HeroPlacement{};
+    const float full_alpha = full_at.usable ? fade_in(*full) : 0.0f;
+    if (full_alpha < 1.0f)
     {
-        const HeroPlacement at = place_hero(pic->width, pic->height, box);
-        if (at.usable)
+        if (const Artwork *low = carousel_low_art(art))
         {
-            picture = fade_in(*pic);
-            list.image(pic->texture, at.dest, at.uv, ui::Color::rgb(0xffffff, picture), ui::kArtRadius);
+            const HeroPlacement at = place_hero(low->width, low->height, band);
+            if (at.usable)
+            {
+                picture = fade_in(*low);
+                list.image(low->texture, at.dest, at.uv, ui::Color::rgb(0xffffff, picture), 0.0f);
+            }
         }
+    }
+    if (full_at.usable)
+    {
+        picture = std::max(picture, full_alpha);
+        list.image(full->texture, full_at.dest, full_at.uv, ui::Color::rgb(0xffffff, full_alpha), 0.0f);
     }
     if (picture < 1.0f)
     {
-        // No picture (yet): the cover, scaled up as a blurred wash that fills the box, as on the game page.
+        // No picture (yet): the cover, scaled up as a blurred wash that fills the band, as on the game page.
         if (const Artwork *cover = ctx_.art.get(art.key, ArtKind::cover))
         {
             const float a = (1.0f - picture) * fade_in(*cover);
             if (cover->ambient != 0)
-                ui::image_cover(list, cover->ambient, cover->width, cover->height, box,
-                                ui::Color::rgb(0xffffff, 0.95f * a), ui::kArtRadius);
-            ui::image_cover(list, cover->texture, cover->width, cover->height, box,
-                            ui::Color::rgb(0xffffff, 0.30f * a), ui::kArtRadius, 0.5f, 0.3f);
+                ui::image_cover(list, cover->ambient, cover->width, cover->height, band,
+                                ui::Color::rgb(0xffffff, 0.95f * a));
+            ui::image_cover(list, cover->texture, cover->width, cover->height, band,
+                            ui::Color::rgb(0xffffff, 0.30f * a), 0.0f, 0.5f, 0.3f);
         }
     }
-    // The picture melts into the plate where the words are: the veil under the text.
-    list.gradient_rect_h({box.x, box.y, 340.0f, box.h}, 0.0f, plate, ui::Color::rgb(0x151515, 0.0f));
+    // Veils: dark under the words (left), under the app bar (top), and into the page at the foot.
+    list.gradient_rect_h({0.0f, 0.0f, 1300.0f, kCarouselArtH}, 0.0f, ui::Color::rgb(0x000000, 0.72f),
+                         ui::Color::rgb(0x000000, 0.0f));
+    list.gradient_rect({0.0f, 0.0f, 1920.0f, 170.0f}, 0.0f, ui::Color::rgb(0x000000, 0.65f),
+                       ui::Color::rgb(0x000000, 0.0f));
+    list.gradient_rect({0.0f, kCarouselArtH - 340.0f, 1920.0f, 340.0f}, 0.0f, ui::Color::rgb(0x080808, 0.0f),
+                       night);
 
-    const float x0 = r.x + 56.0f;
-    const float text_w = box.x - x0 - 4.0f;
-    const float size = ui::fit_size(type.light, game.title, 60.0f, 36.0f, text_w);
-    ui::text_fit(list, type.light, game.title, x0, r.y + 168.0f, size, text_w, ui::color::text);
-    const float by = r.y + 212.0f;
+    // The words, bottom-aligned on the buttons: eyebrow, title (at most two lines), buttons, dots.
+    constexpr float kTitleSize = 73.0f;
+    constexpr float kTitleLine = 80.0f;
+    constexpr float kTitleWidth = 760.0f;
     constexpr float kBtnH = 60.0f;
-    const std::string install = tr("Install");
+    const float x0 = ui::kGutter;
+    const float by = 604.0f;
+    const int lines = std::clamp(static_cast<int>(type.semibold.font->wrap(game.title, kTitleSize, kTitleWidth).size()),
+                                 1, 2);
+    const float first = by - 48.0f - kTitleLine * static_cast<float>(lines - 1);
+    ui::text(list, type.medium, tr("FEATURED"), x0, first - kTitleSize - 20.0f, 16.0f, ui::color::text2);
+    ui::paragraph(list, type.semibold, game.title, x0, first, kTitleSize, kTitleWidth, kTitleLine,
+                  ui::color::text, 2);
+    const std::string view = tr("View game");
+    const float view_w = std::max(234.0f, ui::button_width(type, view, 24.0f) + 40.0f);
+    ui::button(list, type, {x0, by, view_w, kBtnH}, view, ui::ButtonKind::light,
+               focus * car_btn_[kCarouselView].value, true, 24.0f);
+    // The heart: a round outline button, filled once the game is a favourite.
     const bool fav = game_favourite(state_, game, snapshot.packages);
-    const std::string fav_label = fav ? std::string(tr("Favourited")) : std::string(tr("Favourite"));
-    const float install_w = std::max(230.0f, ui::button_width(type, install, 24.0f) + 40.0f);
-    const float fav_w = std::max(230.0f, ui::button_width(type, fav_label, 24.0f, ui::ButtonKind::secondary) + 40.0f);
-    ui::button(list, type, {x0, by, install_w, kBtnH}, install, ui::ButtonKind::primary,
-               focus * car_btn_[kCarouselInstall].value, true, 24.0f);
-    ui::button(list, type, {x0 + install_w + 18.0f, by, fav_w, kBtnH}, fav_label, ui::ButtonKind::secondary,
-               focus * car_btn_[kCarouselFavourite].value, true, 24.0f);
+    const ui::Rect heart{x0 + view_w + 18.0f, by, kBtnH, kBtnH};
+    ui::focus_ring(list, heart, kBtnH * 0.5f, focus * car_btn_[kCarouselFavourite].value);
+    list.bordered_rect(heart, kBtnH * 0.5f, night.with_alpha(0.45f), 1.5f, ui::color::text2.with_alpha(0.6f));
+    if (fav)
+        ui::icon_heart_filled(list, heart.cx(), heart.cy(), 25.0f, ui::color::text);
+    else
+        ui::icon_heart(list, heart.cx(), heart.cy(), 25.0f, ui::color::text);
     list.pop_opacity();
 
     if (count > 1)
@@ -2321,13 +2408,15 @@ void StoreScreen::draw_carousel(hui::gfx::DrawList &list) const
         for (int i = 0; i < count; ++i)
         {
             const float cx = x0 + 6.0f + static_cast<float>(i) * 24.0f;
-            const float cy = r.y + r.h - 52.0f;
+            const float cy = by + kBtnH + 40.0f;
             if (i == slide)
                 list.circle(cx, cy, 6.0f, ui::color::text);
             else
                 list.circle(cx, cy, 4.5f, ui::Color::rgb(0xffffff, 0.35f));
         }
     }
+    list.pop_transform();
+    list.pop_opacity();
 }
 
 void StoreScreen::draw_grid(Frame &frame, bool focused) const
@@ -2374,6 +2463,11 @@ void StoreScreen::draw_grid(Frame &frame, bool focused) const
         ui::button(list, type, go, tr("Open Sources"), ui::ButtonKind::primary, focused ? 1.0f : 0.0f);
         return;
     }
+    // The hero first (the header's words sit over its foot); with it the header and the round button ride up
+    // with the page until they reach their place, then stay there while the rows scroll under them.
+    if (carousel_on_ && !carousel_games_.empty() && !tiles_.empty())
+        draw_carousel(list);
+    list.push_transform(1.0f, 0.0f, 0.0f, 0.0f, std::max(0.0f, carousel_extra() - scroll_.value));
     {
         const WingsLocalPrefs &prefs = prefs_source_ != nullptr ? *prefs_source_ : own_prefs_;
         const bool on_tile = focused && !on_button_ && !in_carousel_ && index_ >= 0 &&
@@ -2382,6 +2476,7 @@ void StoreScreen::draw_grid(Frame &frame, bool focused) const
                                             on_tile ? tile_focus_[static_cast<std::size_t>(index_)] : 0.0f));
     }
     draw_utility_button(list, button_focus_.value);
+    list.pop_transform();
     if (tiles_.empty())
     {
         ui::text(list, type.light, tr("No games match"), kGridLeft, kGridTop + 90.0f, 44.0f,
@@ -2393,8 +2488,6 @@ void StoreScreen::draw_grid(Frame &frame, bool focused) const
         return;
     }
     list.push_clip({0.0f, kGridTop - 24.0f, 1920.0f, kGridBottom - kGridTop + 24.0f});
-    if (carousel_on_ && !carousel_games_.empty())
-        draw_carousel(list);
     for (std::size_t i = 0; i < tiles_.size(); ++i)
     {
         const ui::Rect r = tile_rect(static_cast<int>(i));
@@ -2849,7 +2942,7 @@ void StoreScreen::draw_detail(Frame &frame, bool focused) const
         head.hero_full = !header_.hero_url.empty();
         head.hero_low = !header_.hero_low_url.empty();
         if (head.hero_full || head.hero_low)
-            head.hero_key = page_.art_key;
+            head.hero_key = header_.hero_key.empty() ? page_.art_key : header_.hero_key;
         if (pop != nullptr)
             meta_line += "  \xC2\xB7  " + popularity_line(pop);
         else if (const SteamReviewService *live = steam_reviews())
@@ -2877,7 +2970,11 @@ void StoreScreen::draw_detail(Frame &frame, bool focused) const
         const float nx = head_layout.text_x;
         const float base = head_layout.meta_baseline + 54.0f;
         const ui::Color amber = theme::semantic::caution;
+        // It is part of the header: it slides up with it (the same shift as draw_game_header), so it stays under
+        // the title block it belongs to instead of being left behind while that moves away.
+        const float shift = head_layout.list_top - 290.0f;
         list.push_opacity(fade);
+        list.push_transform(1.0f, 0.0f, 0.0f, 0.0f, -header_.slide.value * shift);
         list.rounded_rect({nx, base - 22.0f, 28.0f, 28.0f}, 14.0f, amber);
         const float bang = type.semibold.measure("!", 21.0f);
         ui::text(list, type.semibold, "!", nx + 14.0f - bang * 0.5f, base - 1.0f, 21.0f, ui::Color::rgb(0x181818));
@@ -2889,6 +2986,7 @@ void StoreScreen::draw_detail(Frame &frame, bool focused) const
         const float note_size = ui::fit_size(type.regular, note, 21.0f, 14.0f, note_w * 1.8f);
         ui::paragraph(list, type.regular, note, nx + 40.0f, base + 32.0f, note_size, note_w, note_size * 1.43f,
                       ui::color::text2, 2);
+        list.pop_transform();
         list.pop_opacity();
     }
 
@@ -2990,20 +3088,36 @@ void StoreScreen::draw(Frame &frame, bool focused) const
         draw_grid(frame, focused);
     hui::gfx::DrawList &overlay = frame.overlay;
     draw_panel(overlay);
-    if (ctx_.store.link_action().busy)
+    if (batch_.active)
     {
-        if (batch_.active)
-        {
-            const std::string text =
-                tr("Queueing part {n} of {total} from {host}…",
-                   {{"n", std::to_string(std::min(batch_.done + 1, batch_.total))},
-                    {"total", std::to_string(batch_.total)},
-                    {"host", batch_.host}}) +
-                "  (" + tr("Circle: stop after this part") + ")";
-            draw_busy(ctx_, overlay, text.c_str());
-        }
-        else
-            draw_busy(ctx_, overlay, tr("Asking Pegasus DL\xE2\x80\xA6"));
+        // "Part 6 of 22 from VikingFile · try 2 of 3 · retrying in 6 s  (Circle: stop)"
+        const int position = std::min(batch_.done + 1, batch_.total);
+        const int number = batch_.current > 0 ? batch_.current : position;
+        std::string text =
+            number == position
+                ? tr("Part {n} of {total} from {host}", {{"n", std::to_string(number)},
+                                                         {"total", std::to_string(batch_.total)},
+                                                         {"host", batch_.host}})
+                : tr("Part {n} ({i} of {total}) from {host}", {{"n", std::to_string(number)},
+                                                               {"i", std::to_string(position)},
+                                                               {"total", std::to_string(batch_.total)},
+                                                               {"host", batch_.host}});
+        if (batch_.attempt > 1)
+            text += " \xC2\xB7 " + tr("try {attempt} of {tries}", {{"attempt", std::to_string(batch_.attempt)},
+                                                                   {"tries", std::to_string(kPartAttempts)}});
+        if (!batch_.trying_host.empty() && batch_.trying_host != batch_.host)
+            text += " \xC2\xB7 " + tr("via {host}", {{"host", batch_.trying_host}});
+        if (batch_.waiting > 0.0f)
+            text += " \xC2\xB7 " + tr("retrying in {s} s",
+                                      {{"s", std::to_string(static_cast<int>(std::ceil(batch_.waiting)))}});
+        text += "  (";
+        text += tr("Circle: stop");
+        text += ")";
+        draw_busy(ctx_, overlay, text.c_str());
+    }
+    else if (ctx_.store.link_action().busy)
+    {
+        draw_busy(ctx_, overlay, tr("Asking Pegasus DL\xE2\x80\xA6"));
     }
     // The const draw path of the panels needs a mutable frame: it is one.
     Context &ctx = ctx_;
@@ -3056,7 +3170,7 @@ std::vector<hui::ui::Hint> StoreScreen::hints() const
     // On the carousel: Cross is the focused button, Square toggles the slide's game as a favourite.
     if (in_carousel_ && carousel_on_)
     {
-        return {{hui::ui::Button::cross, car_button_ == kCarouselFavourite ? tr("Favourite") : tr("Install")},
+        return {{hui::ui::Button::cross, car_button_ == kCarouselFavourite ? tr("Favourite") : tr("View game")},
                 {hui::ui::Button::square, tr("Favourite")},
                 {hui::ui::Button::triangle, tr("Search")},
                 {hui::ui::Button::options, tr("Utilities")},

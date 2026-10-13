@@ -487,6 +487,28 @@ void FakeBackend::set_capture_steps(int steps)
     capture_steps_ = steps;
 }
 
+void FakeBackend::set_capture_script(std::vector<std::string> states, bool requires_browser,
+                                     std::string message)
+{
+    Lock lock(mutex_);
+    script_states_ = std::move(states);
+    script_pos_ = 0;
+    script_browser_ = requires_browser;
+    script_message_ = std::move(message);
+}
+
+void FakeBackend::set_capture_hook(std::function<void(int)> hook)
+{
+    Lock lock(mutex_);
+    capture_hook_ = std::move(hook);
+}
+
+int FakeBackend::capture_reads() const
+{
+    Lock lock(mutex_);
+    return script_reads_;
+}
+
 int FakeBackend::cancelled_captures() const
 {
     Lock lock(mutex_);
@@ -908,6 +930,13 @@ Result<LinkResult> FakeBackend::start_link(std::string_view package_id, int link
         out.capture.message = capture_automated_
                                   ? "Browser opened. Waiting for Cloudflare verification..."
                                   : "Browser opened. Waiting for the download URL...";
+        if (!script_states_.empty())
+        {
+            script_pos_ = 0;
+            out.capture.requires_browser = script_browser_;
+            if (!script_browser_)
+                out.capture.state = "queueing";
+        }
         break;
     default:
         out.kind = LinkResult::Kind::browser_opened;
@@ -944,6 +973,52 @@ Result<LinkResult> FakeBackend::debrid_select(std::string_view selection_id,
 
 Result<CaptureView> FakeBackend::capture_status(std::string_view session_id)
 {
+    {
+        Result<CaptureView> scripted;
+        std::function<void(int)> hook;
+        int reads = 0;
+        {
+            Lock lock(mutex_);
+            if (!script_states_.empty() && mode_ != FakeMode::offline)
+            {
+                reads = ++script_reads_;
+                hook = capture_hook_;
+                const std::size_t at = std::min(script_pos_, script_states_.size() - 1);
+                ++script_pos_;
+                scripted.status = 200;
+                CaptureView &view = scripted.value;
+                view.session_id = std::string(session_id);
+                view.title = capture_title_;
+                view.automated = capture_automated_;
+                view.requires_browser = script_browser_;
+                view.state = script_states_[at];
+                view.active = !view.terminal();
+                if (view.state == "completed")
+                {
+                    view.message = "Supported download queued.";
+                    add_job_locked(capture_title_, "queued", 20.0);
+                    view.result.queued = true;
+                    view.result.has_jobs = true;
+                    view.result.jobs = jobs_;
+                    view.result.toast = view.message;
+                }
+                else if (view.terminal())
+                {
+                    view.message = script_message_;
+                }
+                else
+                {
+                    view.message = "Link resolving is in process. Please wait.";
+                }
+            }
+        }
+        if (reads > 0)
+        {
+            if (hook)
+                hook(reads);
+            return scripted;
+        }
+    }
     Lock lock(mutex_);
     if (mode_ == FakeMode::offline)
         return refuse<CaptureView>();

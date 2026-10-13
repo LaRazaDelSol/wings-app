@@ -675,6 +675,108 @@ std::string best_summary(const GameView &view)
     return join(view.page.best_chips, kDot);
 }
 
+int mirror_part_number(const GamePage &page, int mirror, const LinkRef &ref)
+{
+    if (mirror < 0 || mirror >= static_cast<int>(page.mirrors.size()))
+        return 0;
+    const Mirror &m = page.mirrors[static_cast<std::size_t>(mirror)];
+    for (std::size_t i = 0; i < m.links.size(); ++i)
+    {
+        const GameLink &l = page.links[static_cast<std::size_t>(m.links[i])];
+        if (l.index == ref.link_index && page.packages[static_cast<std::size_t>(l.package)].id == ref.package_id)
+            return i < m.numbers.size() ? m.numbers[i] : static_cast<int>(i) + 1;
+    }
+    return 0;
+}
+
+namespace
+{
+
+// A set whose numbers can be trusted part for part: 1..N, each once, one run, no gap.
+bool aligned_set(const Mirror &m)
+{
+    return m.status == PartStatus::complete && m.runs.size() <= 1 && m.missing.empty() && !m.links.empty() &&
+           m.numbers.size() == m.links.size();
+}
+
+std::vector<int> sorted_numbers(const Mirror &m)
+{
+    std::vector<int> out = m.numbers;
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+// plan->numbers, alternates and alternate_hosts for plan->refs: the same part
+// on the other hosts of the same release, when both sets line up exactly.
+void plan_alternates(const GamePage &page, int mirror, const StartedLinks &started, PartsPlan *plan)
+{
+    const std::size_t count = plan->refs.size();
+    plan->numbers.assign(count, 0);
+    plan->alternates = std::vector<std::vector<LinkRef>>(count);
+    plan->alternate_hosts = std::vector<std::vector<std::string>>(count);
+    for (std::size_t i = 0; i < count; ++i)
+        plan->numbers[i] = mirror_part_number(page, mirror, plan->refs[i]);
+    const Mirror &m = page.mirrors[static_cast<std::size_t>(mirror)];
+    if (!aligned_set(m))
+        return;
+    const std::vector<int> numbers = sorted_numbers(m);
+    std::vector<int> others;
+    for (std::size_t o = 0; o < page.mirrors.size(); ++o)
+    {
+        const Mirror &other = page.mirrors[o];
+        if (static_cast<int>(o) == mirror || other.release != m.release || other.host == m.host ||
+            !aligned_set(other) || other.links.size() != m.links.size() || sorted_numbers(other) != numbers)
+            continue;
+        others.push_back(static_cast<int>(o));
+    }
+    std::stable_sort(others.begin(), others.end(),
+                     [&](int a, int b)
+                     {
+                         const Mirror &ma = page.mirrors[static_cast<std::size_t>(a)];
+                         const Mirror &mb = page.mirrors[static_cast<std::size_t>(b)];
+                         const int ra = tier_rank(ma.tier);
+                         const int rb = tier_rank(mb.tier);
+                         return ra != rb ? ra < rb : ma.host < mb.host;
+                     });
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        if (plan->numbers[i] <= 0)
+            continue;
+        for (const int o : others)
+        {
+            const Mirror &other = page.mirrors[static_cast<std::size_t>(o)];
+            for (std::size_t k = 0; k < other.links.size(); ++k)
+            {
+                if (other.numbers[k] != plan->numbers[i])
+                    continue;
+                const GameLink &gl = page.links[static_cast<std::size_t>(other.links[k])];
+                LinkRef ref{page.packages[static_cast<std::size_t>(gl.package)].id, gl.index};
+                const bool blocked = gl.tier == LinkTier::unsupported || (gl.needs_browser && !m.needs_browser);
+                if (!gl.duplicate && !blocked && !started.has(ref))
+                {
+                    plan->alternates[i].push_back(std::move(ref));
+                    plan->alternate_hosts[i].push_back(other.host);
+                }
+                break;
+            }
+        }
+    }
+}
+
+// " If a part keeps failing, the same part is tried on Rootz, 1fichier." or "".
+std::string alternates_sentence(const PartsPlan &plan)
+{
+    std::vector<std::string> hosts;
+    for (const std::vector<std::string> &part : plan.alternate_hosts)
+        for (const std::string &h : part)
+            add_unique(&hosts, h);
+    if (hosts.empty())
+        return {};
+    return " " + tr("If a part keeps failing, the same part is tried on {hosts}.", {{"hosts", join(hosts, ", ")}});
+}
+
+} // namespace
+
 PartsPlan plan_parts(const GameView &view, int mirror, const StartedLinks &started)
 {
     PartsPlan plan;
@@ -715,6 +817,8 @@ PartsPlan plan_parts(const GameView &view, int mirror, const StartedLinks &start
                           {{"host", plan.host}});
         if (!m.warning().empty())
             plan.message += " " + tr("Careful: {warning}.", {{"warning", m.warning()}});
+        plan_alternates(page, mirror, started, &plan);
+        plan.message += alternates_sentence(plan);
         return plan;
     }
     plan.action = m.status == PartStatus::complete || m.status == PartStatus::unnumbered
@@ -734,6 +838,8 @@ PartsPlan plan_parts(const GameView &view, int mirror, const StartedLinks &start
     if (!m.warning().empty())
         message += " " + tr("Careful: {warning}.", {{"warning", m.warning()}});
     message += " " + std::string(tr("It is a multi-part archive: you need every part to extract it."));
+    plan_alternates(page, mirror, started, &plan);
+    message += alternates_sentence(plan);
     plan.message = std::move(message);
     return plan;
 }

@@ -50,6 +50,7 @@ class CoreTransport final : public wings::http::Transport
         mine.body = request.body;
         mine.max_bytes = request.max_bytes == 0 ? http::kDefaultLimit
                                                  : std::min(request.max_bytes, kMaxReply);
+        mine.timeout_ms = request.timeout_ms;
         http::Response reply = transport_.send(mine);
         out.status = reply.status;
         out.body = std::move(reply.body);
