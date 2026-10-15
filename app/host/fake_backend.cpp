@@ -12,6 +12,8 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <fstream>
+#include <iterator>
 
 #include <unistd.h>
 
@@ -112,6 +114,86 @@ std::string make_art(const std::string &seed, bool hero)
     std::string png;
     stbi_write_png_to_func(append, &png, width, height, 4, pixels.data(), width * 4);
     return png;
+}
+
+constexpr FixtureGame kFixtureGames[] = {
+    {1, "SuperTuxKart", "supertuxkart", "PPSA90001"},
+    {2, "0 A.D.", "0ad", "PPSA90002"},
+    {3, "Xonotic", "xonotic", "PPSA90003"},
+    {4, "OpenArena", "openarena", "PPSA90004"},
+    {5, "Veloren", "veloren", "PPSA90005"},
+    {7, "The Battle for Wesnoth", "wesnoth", "PPSA90007"},
+    {8, "Luanti", "luanti", "PPSA90101"},
+    {9, "Warzone 2100", "warzone2100", "PPSA90009"},
+    {10, "Unvanquished", "unvanquished", "PPSA90102"},
+    {11, "Red Eclipse", "redeclipse", "PPSA90103"},
+    {12, "Mindustry", "mindustry", "PPSA90104"},
+    {13, "Cataclysm: Dark Days Ahead", "cataclysm", "PPSA90013"},
+};
+
+const FixtureGame *fixture_for(int package)
+{
+    for (const FixtureGame &game : kFixtureGames)
+        if (game.package == package)
+            return &game;
+    return nullptr;
+}
+
+// The picture file of a fixture game ("cover" or "hero"), or "" when the folder has none.
+std::string fixture_file(const std::string &dir, int package, const char *kind)
+{
+    const FixtureGame *game = dir.empty() ? nullptr : fixture_for(package);
+    if (game == nullptr)
+        return {};
+    const std::string path = dir + "/" + game->slug + "-" + kind + ".jpg";
+    return std::ifstream(path, std::ios::binary).good() ? path : std::string();
+}
+
+// Showcase: the fixture game with picture files for this title id, or nullptr.
+const FixtureGame *fixture_by_title(const std::string &dir, std::string_view title_id)
+{
+    for (const FixtureGame &game : kFixtureGames)
+        if (title_id == game.title_id && !fixture_file(dir, game.package, "cover").empty())
+            return &game;
+    return nullptr;
+}
+
+// Showcase: a fixture game with picture files for each title id: its own when it has one, else one the
+// others do not use (from the end of the list), else any.
+std::vector<const FixtureGame *> fixtures_for_titles(const std::string &dir, const std::vector<std::string> &title_ids)
+{
+    std::vector<const FixtureGame *> out;
+    for (const std::string &id : title_ids)
+        out.push_back(fixture_by_title(dir, id));
+    for (const FixtureGame *&slot : out)
+    {
+        if (slot != nullptr)
+            continue;
+        const FixtureGame *spare = nullptr;
+        for (auto it = std::rbegin(kFixtureGames); it != std::rend(kFixtureGames); ++it)
+        {
+            if (fixture_file(dir, it->package, "cover").empty())
+                continue;
+            if (spare == nullptr)
+                spare = &*it;
+            if (std::find(out.begin(), out.end(), &*it) == out.end())
+            {
+                spare = &*it;
+                break;
+            }
+        }
+        slot = spare;
+    }
+    return out;
+}
+
+// Every `from` in `text` becomes `to`.
+void replace_all(std::string &text, const std::string &from, const std::string &to)
+{
+    if (from.empty())
+        return;
+    for (std::size_t at = text.find(from); at != std::string::npos; at = text.find(from, at + to.size()))
+        text.replace(at, from.size(), to);
 }
 
 struct SamplePackage
@@ -347,6 +429,48 @@ Package make_package(int n, const SamplePackage &sample)
 }
 
 } // namespace
+
+void FakeBackend::retitle(Package &package, int n) const
+{
+    if (fixture_file(fixture_dir_, n, "cover").empty())
+        return;
+    package.title = fixture_for(n)->title;
+    package.description = package.title + " is a free and open-source game, shown here as sample art for Wings.";
+}
+
+const FixtureGame *fixture_games(int *count)
+{
+    *count = static_cast<int>(sizeof(kFixtureGames) / sizeof(kFixtureGames[0]));
+    return kFixtureGames;
+}
+
+void FakeBackend::set_fixture_dir(const std::string &dir)
+{
+    Lock lock(mutex_);
+    fixture_dir_ = dir;
+}
+
+void FakeBackend::set_showcase(bool on)
+{
+    Lock lock(mutex_);
+    showcase_ = on;
+    if (!on)
+        return;
+    // The sample files named after invented games take fixture titles instead.
+    const auto rename = [&](const char *from, int package, const char *suffix)
+    {
+        const auto found = fs_.find(from);
+        if (found == fs_.end() || fixture_file(fixture_dir_, package, "cover").empty())
+            return;
+        const FsNode node = found->second;
+        fs_.erase(found);
+        const std::string path(from);
+        fs_[path.substr(0, path.rfind('/')) + "/" + fixture_for(package)->title + suffix] = node;
+    };
+    rename("/data/pegasus-dl/downloads/Ember Hollow.pkg", 1, ".pkg");
+    rename("/data/pegasus-dl/downloads/Neon Courier.part1.rar", 3, ".part1.rar");
+    rename("/mnt/usb0/Quiet Harbour.pkg", 4, ".pkg");
+}
 
 FakeBackend::FakeBackend(FakeMode mode) : mode_(mode)
 {
@@ -597,6 +721,26 @@ Result<std::vector<Job>> FakeBackend::queue()
     Result<std::vector<Job>> result;
     result.status = 200;
     result.value = jobs_;
+    if (showcase_)
+    {
+        std::vector<std::string> ids;
+        for (const Job &job : result.value)
+            ids.push_back(job.title_id);
+        const std::vector<const FixtureGame *> games = fixtures_for_titles(fixture_dir_, ids);
+        for (std::size_t i = 0; i < games.size(); ++i)
+        {
+            Job &job = result.value[i];
+            if (games[i] == nullptr)
+                continue;
+            // "Name (archive)" keeps its suffix; the archive's file names take the new title too.
+            const std::size_t suffix = job.name.find(" (");
+            const std::string old_title = job.name.substr(0, suffix);
+            replace_all(job.name, old_title, games[i]->title);
+            for (ArchiveChoice &choice : job.choices)
+                replace_all(choice.name, old_title, games[i]->title);
+            job.title_id = games[i]->title_id;
+        }
+    }
     return result;
 }
 
@@ -611,7 +755,16 @@ Result<std::vector<Package>> FakeBackend::library()
         return result;
     int n = 1;
     for (const SamplePackage &sample : kPackages)
-        result.value.push_back(make_package(n++, sample));
+    {
+        // Showcase: only the games whose real pictures are in the fixture folder.
+        if (showcase_ && fixture_file(fixture_dir_, n, "cover").empty())
+        {
+            ++n;
+            continue;
+        }
+        result.value.push_back(make_package(n, sample));
+        retitle(result.value.back(), n++);
+    }
     return result;
 }
 
@@ -630,6 +783,7 @@ Result<PackageDetail> FakeBackend::package(std::string_view id)
     }
     result.status = 200;
     result.value.package = make_package(std::atoi(std::string(id.substr(3)).c_str()), *sample);
+    retitle(result.value.package, std::atoi(std::string(id.substr(3)).c_str()));
     if (is_rich(std::atoi(std::string(id.substr(3)).c_str())))
     {
         result.value.links = rich_links(std::atoi(std::string(id.substr(3)).c_str()));
@@ -724,6 +878,22 @@ Result<std::vector<InstalledGame>> FakeBackend::installed()
     if (mode_ == FakeMode::empty || mode_ == FakeMode::onboarding)
         return result;
     result.value = installed_;
+    if (showcase_)
+    {
+        std::vector<std::string> ids;
+        for (const InstalledGame &game : result.value)
+            ids.push_back(game.title_id);
+        const std::vector<const FixtureGame *> games = fixtures_for_titles(fixture_dir_, ids);
+        for (std::size_t i = 0; i < games.size(); ++i)
+        {
+            InstalledGame &game = result.value[i];
+            if (games[i] == nullptr)
+                continue;
+            replace_all(game.path, game.title_id, games[i]->title_id);
+            game.title_id = games[i]->title_id;
+            game.title = games[i]->title;
+        }
+    }
     return result;
 }
 
@@ -1299,8 +1469,18 @@ Result<Art> FakeBackend::art(std::string_view key, ArtKind kind)
     const std::string name(key);
     bool poster = false;
     int asks = 0;
+    std::string fixture;
     {
         Lock lock(mutex_);
+        if (key.substr(0, 4) == "pkg:")
+            fixture = fixture_file(fixture_dir_, std::atoi(name.c_str() + (name.compare(0, 7, "pkg:pkg") == 0 ? 7 : 4)),
+                                   kind == ArtKind::cover ? "cover" : "hero");
+        // Showcase: installed games show their fixture game's picture.
+        else if (showcase_ && key.substr(0, 4) == "app:")
+        {
+            if (const FixtureGame *game = fixture_by_title(fixture_dir_, key.substr(4)))
+                fixture = fixture_file(fixture_dir_, game->package, kind == ArtKind::cover ? "cover" : "hero");
+        }
         asks = ++art_asks_[name];
         poster = key.substr(0, 4) == "pkg:" && store_art_;
     }
@@ -1314,7 +1494,7 @@ Result<Art> FakeBackend::art(std::string_view key, ArtKind kind)
     }
     if (poster)
     {
-        if (hash(name) % 7 == 0)
+        if (fixture.empty() && hash(name) % 7 == 0)
         {
             result.status = 404;
             result.error = "artwork unavailable";
@@ -1328,6 +1508,16 @@ Result<Art> FakeBackend::art(std::string_view key, ArtKind kind)
         }
     }
     result.status = 200;
+    if (!fixture.empty())
+    {
+        std::ifstream in(fixture, std::ios::binary);
+        result.value.bytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+        if (!result.value.bytes.empty())
+        {
+            result.value.content_type = "image/jpeg";
+            return result;
+        }
+    }
     result.value.content_type = "image/png";
     result.value.bytes = make_art(name, kind != ArtKind::cover);
     return result;
@@ -2098,6 +2288,18 @@ Result<std::vector<FileOp>> FakeBackend::file_pkg_install(std::string_view path)
     return result;
 }
 
+Result<bool> FakeBackend::open_url(std::string_view url)
+{
+    Lock lock(mutex_);
+    if (mode_ == FakeMode::offline)
+        return refuse<bool>();
+    opened_urls_.push_back(std::string(url));
+    Result<bool> result;
+    result.status = 200;
+    result.value = true;
+    return result;
+}
+
 Result<bool> FakeBackend::file_cancel(std::string_view operation_id)
 {
     Lock lock(mutex_);
@@ -2195,6 +2397,12 @@ std::vector<std::string> FakeBackend::pkg_installs() const
 {
     Lock lock(mutex_);
     return installs_;
+}
+
+std::vector<std::string> FakeBackend::opened_urls() const
+{
+    Lock lock(mutex_);
+    return opened_urls_;
 }
 
 std::string FakeBackend::last_token(bool torbox) const

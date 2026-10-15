@@ -273,6 +273,10 @@ struct Job
     int attempts = 0;
     int max_attempts = 0;
     std::vector<ArchiveChoice> choices; // when status is waitingChoice
+    // A .pkg Wings downloaded to disk and installs itself (pkg_install.hpp), on a completed job:
+    // "installing", "installed", "install_failed", or empty. install_text is the player text.
+    std::string install_state;
+    std::string install_text;
 };
 
 // A game installed on the console (GET /appdb).
@@ -410,6 +414,8 @@ bool job_active(const Job &job);   // still moving or waiting its turn
 bool job_finished(const Job &job); // completed, failed or cancelled
 bool job_running(const Job &job);  // actually transferring or working
 const char *status_label(std::string_view status);
+// The chip for a completed .pkg Wings installs itself (Job::install_state); nullptr when there is none.
+const char *install_label(std::string_view install_state);
 // The fraction to draw (0..1), or negative when nothing is known.
 double job_fraction(const Job &job);
 

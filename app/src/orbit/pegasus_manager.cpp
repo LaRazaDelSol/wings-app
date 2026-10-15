@@ -660,8 +660,9 @@ bool PegasusManager::start_job(PegasusPhase phase, std::function<void()> body)
 {
     {
         Lock l(mutex_);
-        if (!status_.attached || status_.phase != PegasusPhase::idle)
-            return false;
+        if (!status_.attached || status_.phase != PegasusPhase::idle || running_)
+            return false; // running_: a cancelled job has not returned yet
+        running_ = true;
         status_.phase = phase;
         status_.message.clear();
         status_.message_is_error = false;
@@ -671,9 +672,16 @@ bool PegasusManager::start_job(PegasusPhase phase, std::function<void()> body)
         cancel_ = false;
     }
     thread_.join();
-    if (!thread_.start(std::move(body), 512u << 10))
+    auto run = [this, body = std::move(body)]
+    {
+        body();
+        Lock l(mutex_);
+        running_ = false;
+    };
+    if (!thread_.start(std::move(run), 512u << 10))
     {
         Lock l(mutex_);
+        running_ = false;
         status_.phase = PegasusPhase::idle;
         status_.message = tr("Could not start the background job");
         status_.message_is_error = true;
@@ -685,6 +693,8 @@ bool PegasusManager::start_job(PegasusPhase phase, std::function<void()> body)
 void PegasusManager::finish(const std::string &message, bool is_error)
 {
     Lock l(mutex_);
+    if (cancel_)
+        return; // cancel() already ended the job: a late result changes nothing
     status_.phase = PegasusPhase::idle;
     status_.message = message;
     status_.message_is_error = is_error;
@@ -704,7 +714,12 @@ void PegasusManager::wait_idle()
 void PegasusManager::cancel()
 {
     Lock l(mutex_);
+    if (status_.phase == PegasusPhase::idle)
+        return; // nothing runs: a later job must not start cancelled
     cancel_ = true;
+    status_.message = status_.phase == PegasusPhase::downloading ? tr("Download cancelled") : tr("Stopped");
+    status_.message_is_error = status_.phase == PegasusPhase::downloading;
+    status_.phase = PegasusPhase::idle;
 }
 
 void PegasusManager::auto_check()
@@ -769,6 +784,8 @@ void PegasusManager::run_check()
             error = tr("The release list could not be read");
     }
     Lock l(mutex_);
+    if (cancel_)
+        return; // Circle: the late answer changes nothing
     status_.phase = PegasusPhase::idle;
     status_.check_error = error;
     if (!error.empty())
@@ -902,6 +919,8 @@ void PegasusManager::run_download(PegasusRelease release)
         return;
     }
     Lock l(mutex_);
+    if (cancel_)
+        return; // Circle came first: the status stays "cancelled"
     status_.phase = PegasusPhase::idle;
     status_.downloaded = true;
     status_.path = final_path;
@@ -977,6 +996,8 @@ void PegasusManager::run_verify_send(PegasusRelease release)
     bool answered = false;
     {
         Lock l(mutex_);
+        if (cancel_)
+            return; // Circle before the send: nothing is sent
         answered = online_now_; // the health re-check, immediately before the send
         if (!answered)
         {
@@ -1115,6 +1136,8 @@ void PegasusManager::run_send(std::string path, std::string note)
     {
         {
             Lock l(mutex_);
+            if (cancel_)
+                return;
             status_.fail = error == "connection refused" ? PegasusFail::no_loader : PegasusFail::send;
         }
         finish(tr("Could not send to the payload loader at {where} ({reason}). Send the file with your usual "
@@ -1124,6 +1147,8 @@ void PegasusManager::run_send(std::string path, std::string note)
         return;
     }
     Lock l(mutex_);
+    if (cancel_)
+        return; // Circle came first: the screen already went back
     status_.phase = PegasusPhase::idle;
     status_.sent = true;
     status_.message = tr("Sent to the payload loader at {where}. Wait for Wings to say Pegasus DL is running.",

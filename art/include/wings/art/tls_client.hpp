@@ -46,6 +46,7 @@ enum class Error : std::uint8_t
     bad_type,    // Content-Type not in the image allow-list
     protocol,    // malformed HTTP response
     cancelled,   // GetOptions::cancelled returned true
+    sink,        // GetOptions::sink returned false (disk full, size mismatch, ...)
 };
 
 const char *name(Error e);
@@ -101,6 +102,12 @@ struct GetOptions
     // Optional. Called with the body bytes received so far (also for small redirect bodies).
     void (*progress)(void *, std::uint64_t bytes) = nullptr;
     void *hook_ctx = nullptr;
+    // Optional. Streaming: when set, a 2xx body is NOT collected in Response::body (it stays empty).
+    // The bytes are handed to this callback in order, in pieces of at most 16 KiB, so the whole body is
+    // never held in memory. Returning false aborts the transfer with Error::sink. max_body still caps
+    // the total. Never called for redirect or error bodies, and never before the final 2xx status.
+    bool (*sink)(void *, const std::uint8_t *data, std::size_t size) = nullptr;
+    void *sink_ctx = nullptr;
 };
 
 class Shared

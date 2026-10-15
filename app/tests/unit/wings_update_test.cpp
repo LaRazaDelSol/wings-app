@@ -367,6 +367,76 @@ TEST(WingsUpdateWords, SayWhatIsKnown)
     EXPECT_EQ(wings_update_text(s).value, "0.1.2 available");
 }
 
+TEST(WingsUpdatePrompt, LaterSnoozesThatVersionForThreeDays)
+{
+    const std::int64_t now = 1800000000;
+    EXPECT_EQ(kWingsSnoozeS, 3 * 24 * 3600);
+    WingsSnooze none;
+    EXPECT_FALSE(wings_should_prompt(now, "", none)); // nothing known
+    EXPECT_TRUE(wings_should_prompt(now, "v0.1.2", none));
+    const WingsSnooze later = wings_snooze_for("v0.1.2", now);
+    EXPECT_EQ(later.tag, "v0.1.2");
+    EXPECT_EQ(later.until, now + kWingsSnoozeS);
+    EXPECT_FALSE(wings_should_prompt(now, "v0.1.2", later));
+    EXPECT_FALSE(wings_should_prompt(now + kWingsSnoozeS - 1, "v0.1.2", later));
+    EXPECT_TRUE(wings_should_prompt(now + kWingsSnoozeS, "v0.1.2", later)); // asks again
+    EXPECT_TRUE(wings_should_prompt(now, "v0.1.3", later));                 // a newer release asks at once
+    // The clock went backwards by more than the snooze: it is over, not stretched.
+    EXPECT_TRUE(wings_should_prompt(now - kWingsSnoozeS - 10, "v0.1.2", later));
+}
+
+TEST(WingsUpdatePrompt, SnoozeRecordRoundTripsAndRejectsJunk)
+{
+    WingsSnooze s{"v0.1.2", 1800000123};
+    WingsSnooze back;
+    ASSERT_TRUE(decode_wings_snooze(encode_wings_snooze(s), &back));
+    EXPECT_EQ(back.tag, s.tag);
+    EXPECT_EQ(back.until, s.until);
+    EXPECT_FALSE(decode_wings_snooze("snooze_tag=latest\nsnooze_until=5\n", &back));
+    EXPECT_FALSE(decode_wings_snooze("snooze_tag=v0.1.2\nsnooze_until=-5\n", &back));
+    EXPECT_FALSE(decode_wings_snooze("snooze_tag=v0.1.2\n", &back));
+    EXPECT_TRUE(back.tag.empty());
+}
+
+TEST(WingsUpdatePrompt, TheDialogIsOfferedOncePerStartAndLaterIsSaved)
+{
+    Rig rig;
+    rig.now = 1800000000;
+    {
+        WingsUpdate update;
+        rig.attach(update);
+        EXPECT_FALSE(update.take_prompt()); // nothing known yet
+        update.check_now();
+        update.wait_idle();
+        ASSERT_EQ(update.status().advice, WingsAdvice::newer);
+        EXPECT_TRUE(update.take_prompt());
+        EXPECT_FALSE(update.take_prompt()); // once per start
+        update.snooze_latest();
+        EXPECT_EQ(update.status().snooze.tag, "v0.1.2");
+    }
+    {
+        // The next start reads the saved answer and the saved "Later".
+        WingsUpdate update;
+        rig.now += 3600;
+        rig.attach(update);
+        EXPECT_EQ(update.status().snooze.tag, "v0.1.2");
+        EXPECT_EQ(update.status().snooze.until, 1800000000 + kWingsSnoozeS);
+        EXPECT_FALSE(update.take_prompt());
+    }
+    {
+        WingsUpdate update;
+        rig.now = 1800000000 + kWingsSnoozeS;
+        rig.attach(update);
+        EXPECT_TRUE(update.take_prompt()); // three days later it asks again
+    }
+    {
+        WingsUpdate update;
+        rig.attach(update);
+        update.set_enabled(false);
+        EXPECT_FALSE(update.take_prompt()); // the switch off: no dialog
+    }
+}
+
 TEST(WingsUpdateWords, TheGuideHasFourStepsThatFitTheDialog)
 {
     WingsUpdateStatus s;

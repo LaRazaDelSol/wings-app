@@ -216,6 +216,9 @@ class ArtService
         std::function<bool(const std::string &)> redirect_ok; // false refuses that redirect target
         std::function<void(std::uint64_t)> progress;          // body bytes so far
         std::function<bool()> cancel;                         // true: stop
+        // Streaming: when set the body is NOT kept in Download::body; it arrives here in order, in
+        // pieces of at most 16 KiB, only for the final 2xx answer. false aborts (error "sink").
+        std::function<bool(const std::uint8_t *, std::size_t)> sink;
         int total_timeout_s = 900;
     };
     struct Download

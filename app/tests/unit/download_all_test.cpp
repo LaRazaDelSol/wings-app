@@ -415,39 +415,42 @@ TEST(DownloadAll, AQueuedPartBreaksTheRowOfFailures)
     EXPECT_EQ(tail.all.done, 5);
 }
 
-TEST(DownloadAll, CancelMidWayStopsAfterThePartInFlight)
+TEST(DownloadAll, CancelMidWayEndsAtOnceAndLetsThePartInFlightGo)
 {
     Series s;
     s.on_start = [&](const LinkRef &ref)
     {
         if (ref.link_index == 2)
+        {
             s.all.cancel(); // Circle while part 3 is being queued
+            EXPECT_FALSE(s.all.active); // the box closes right away
+        }
     };
     s.run(s.parts(10));
     EXPECT_EQ(s.all.end, DownloadAll::End::cancelled);
-    EXPECT_EQ(s.all.ok, 3); // the part in flight still counts
+    EXPECT_EQ(s.all.ok, 2); // the part in flight's late answer changes nothing
     EXPECT_EQ(s.order.size(), 3u);
-    EXPECT_EQ(s.queued.keys.size(), 3u);
+    EXPECT_EQ(s.queued.keys.size(), 2u);
     EXPECT_EQ(s.finished_calls, 1);
-    EXPECT_EQ(s.all.report_title(), "Cancelled: 3 of 10 parts queued");
+    EXPECT_EQ(s.all.report_title(), "Cancelled: 2 of 10 parts queued");
     // Cancelling an idle series does nothing.
     s.all.cancel();
     EXPECT_FALSE(s.all.active);
     EXPECT_EQ(s.finished_calls, 1);
 }
 
-TEST(DownloadAll, CancelWhileAPartIsOutWaitsForItsOutcome)
+TEST(DownloadAll, CancelWhileAPartIsOutEndsAtOnce)
 {
     Runner r;
     r.held = true;
     r.run(plans(5));
     r.pending[0](queued_outcome());
     r.all.cancel();
-    EXPECT_TRUE(r.all.active); // part 2 is still out
-    EXPECT_EQ(r.finished_calls, 0);
-    r.pending[1](failure("timed out", true)); // it failed: no wait, no retry, the series ends
-    EXPECT_FALSE(r.all.active);
+    EXPECT_FALSE(r.all.active); // part 2 is still out: it is let go
     EXPECT_EQ(r.all.end, DownloadAll::End::cancelled);
+    EXPECT_EQ(r.finished_calls, 1);
+    r.pending[1](queued_outcome()); // its late answer changes nothing
+    EXPECT_FALSE(r.all.active);
     EXPECT_EQ(r.all.ok, 1);
     EXPECT_EQ(r.asked.size(), 2u);
     EXPECT_TRUE(r.all.failed.empty());

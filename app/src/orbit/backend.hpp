@@ -183,6 +183,8 @@ class Backend : public ArtSource
                                                               std::string_view password) = 0;
     virtual Result<std::vector<FileOp>> file_pkg_install(std::string_view path) = 0;
     virtual Result<bool> file_cancel(std::string_view operation_id) = 0;
+    // Opens a web page in the PS5 browser (POST /api/browser/open, unguarded).
+    virtual Result<bool> open_url(std::string_view url) = 0;
 };
 
 } // namespace orbit

@@ -1001,6 +1001,10 @@ bool download_cancelled(void *ctx)
     const auto &h = static_cast<DownloadCtx *>(ctx)->hooks->cancel;
     return h && h();
 }
+bool download_sink(void *ctx, const std::uint8_t *data, std::size_t size)
+{
+    return static_cast<DownloadCtx *>(ctx)->hooks->sink(data, size);
+}
 } // namespace
 
 ArtService::Download ArtService::fetch_download(const std::string &url, std::size_t max_bytes,
@@ -1027,6 +1031,11 @@ ArtService::Download ArtService::fetch_download(const std::string &url, std::siz
     options.redirect_ok = &download_redirect_ok;
     options.progress = &download_progress;
     options.hook_ctx = &ctx;
+    if (hooks.sink)
+    {
+        options.sink = &download_sink;
+        options.sink_ctx = &ctx;
+    }
     tls::Response r = client.get(url, options);
     out.status = r.status;
     out.time_error = r.time_error;

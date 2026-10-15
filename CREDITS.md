@@ -10,7 +10,7 @@ Wings is a derivative work of the native TV app of **Orbit Store** by **saawant1
 - Forked from: Orbit Store 1.1.0 (TV app 1.4.0), source commit `987022e51eaf925f38093b44f5c24f5e69f57cc9`
 - License: GPL-3.0-or-later. Wings keeps the same license.
 
-What Wings kept from Orbit: the app shell, the screen and navigation model, the on-screen keyboard and prompts, the download-queue and library screen structure, the build and packaging pipeline, and the visual language. What Wings replaced: everything that talks to a backend (Wings talks only to Pegasus DL), the Store, Files, Settings and search screens, link grouping and ranking, and all names, art and icons. Orbit's payload, loader launch, pairing, ShadowMount library client, Zero companion and update feeds are not part of Wings. Files that were rewritten say in their first lines which Orbit file they were adapted from, and the original `SPDX-License-Identifier` headers are kept. Parts of the Pegasus HTTP client (`core/src/http.cpp`) and the JSON reader (`core/src/json.cpp`) were adapted from Orbit's `http.cpp` and `json.cpp`.
+What Wings kept from Orbit: the app shell, the screen and navigation model, the on-screen keyboard and prompts, the download-queue and library screen structure, the build and packaging pipeline, and the visual language. What Wings replaced: everything that talks to a backend (Wings talks only to Pegasus DL), the Store, Files, Settings and search screens, link grouping and ranking, and all names, art and icons. Orbit's payload, pairing, ShadowMount library client, Zero companion and update feeds are not part of Wings. The Wings update helper (`app/helper/`, a separate payload that installs Wings updates) ports code from Orbit Store 1.3.5's backend (`backend/tvapp.c` and `backend/api.c`). Files that were rewritten say in their first lines which Orbit file they were adapted from, and the original `SPDX-License-Identifier` headers are kept. Parts of the Pegasus HTTP client (`core/src/http.cpp`) and the JSON reader (`core/src/json.cpp`) were adapted from Orbit's `http.cpp` and `json.cpp`.
 
 ## The UI kit and platform layer
 
@@ -39,6 +39,9 @@ Running Wings needs a PS5 set up with these separate projects, which have their 
 | LLVM libc++, libc++abi, libunwind | 18.1.8 | Apache-2.0 with LLVM exceptions |
 | compiler-rt builtins | 18.1.3 | Apache-2.0 with LLVM exceptions |
 | OpenSSL (PacBrew ports v0.40.2), statically linked for the cover art TLS client | 3.5.2 | Apache-2.0 |
+| OpenSSL (PacBrew ports v0.40.2), statically linked into the update helper | 3.5.2 | Apache-2.0 |
+| curl / libcurl (PacBrew ports v0.40.2), with libpsl, zstd and zlib, statically linked into the update helper | 8.18.0 | curl licence (MIT/X style); MIT; BSD-3-Clause; zlib |
+| cJSON, compiled into the update helper | 1.7.19 | MIT |
 | Mozilla CA certificate bundle (curl.se `caextract`, 121 roots, as of 2026-08-23) | n/a | MPL-2.0 (data, unmodified) |
 | stb_image, stb_vorbis, stb_image_write (stb_image_write: PC preview only) | see `src/third_party/stb/` | Public domain or MIT |
 | Inter typeface | 4.1 | SIL Open Font License 1.1 |

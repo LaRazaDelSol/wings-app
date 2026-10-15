@@ -9,6 +9,8 @@
 #include "orbit/screens.hpp"
 
 #include "orbit/archive_passwords.hpp"
+#include "orbit/busy_cancel.hpp"
+#include "orbit/download_auto_retry.hpp"
 #include "orbit/install_hint.hpp"
 #include "orbit/model.hpp"
 
@@ -77,6 +79,12 @@ AutoPasswords &auto_passwords(std::shared_ptr<void> &slot)
     return *static_cast<AutoPasswords *>(slot.get());
 }
 
+// status_label() plus "retrying", the state Wings adds while it reconnects a dropped download.
+const char *row_status_label(const std::string &status)
+{
+    return status == "retrying" ? tr("Reconnecting") : status_label(status);
+}
+
 PasswordTrials::Seen seen_of(const Job &job)
 {
     if (job.status == "waitingPassword")
@@ -111,9 +119,14 @@ void DownloadsScreen::open_menu(const Job &job)
         add("resume", tr("Resume"), tr("Carry on from where it stopped"));
     if (job.status == "failed" || job.status == "cancelled")
         add("retry", tr("Retry"), tr("Put it back in the queue"));
+    if (job.status == "retrying")
+    {
+        add("retry", tr("Retry now"), tr("Reconnect without waiting"));
+        add("stop_retry", tr("Stop reconnecting"), tr("Leave it failed"));
+    }
     if (job.status == "downloading" || job.status == "starting" || job.status == "queued")
         add("pause", tr("Pause"), tr("Stop for now, keep what is downloaded"));
-    if (job_active(job))
+    if (job_active(job) && job.status != "retrying")
         add("cancel", tr("Cancel download"), tr("Stop it and take it out of the queue"));
     if (job_finished(job))
         add("clear", tr("Clear finished downloads"), tr("Remove completed, failed and cancelled entries"));
@@ -124,7 +137,7 @@ void DownloadsScreen::open_menu(const Job &job)
     if (items.empty())
         return;
     list_for_ = ListFor::menu;
-    list_.open(job.name, status_label(job.status), std::move(items), ListDialog::Mode::single);
+    list_.open(job.name, row_status_label(job.status), std::move(items), ListDialog::Mode::single);
 }
 
 void DownloadsScreen::run_menu(const std::string &code, const Job &job, Feedback &feedback)
@@ -132,6 +145,10 @@ void DownloadsScreen::run_menu(const std::string &code, const Job &job, Feedback
     if (code == "pause" || code == "resume" || code == "retry")
     {
         ctx_.store.job_action(job.id, code);
+    }
+    else if (code == "stop_retry")
+    {
+        download_reconnect().stop(job.id);
     }
     else if (code == "cancel")
     {
@@ -196,6 +213,12 @@ Intent DownloadsScreen::update(const InputFrame &input, float dt, Feedback &feed
     if (folder_ask_.is_open())
     {
         folder_ask_.update(ctx_, input, dt, feedback);
+        return intent;
+    }
+    // "Checking the link..." goes back at once on Circle; the late answer is dropped by the Store.
+    if (ctx_.store.probe_action().busy && input.is_pressed(Action::back))
+    {
+        ctx_.store.cancel(Store::lane_probe);
         return intent;
     }
 
@@ -547,9 +570,12 @@ void DownloadsScreen::draw(Frame &frame, bool focused) const
             const float title_w = std::min(type.medium.measure(job->name, 26.0f), 780.0f);
             ui::text_fit(list, type.medium, job->name, r.x + 30.0f, r.y + 42.0f, 26.0f, title_w + 1.0f,
                          ui::color::text);
+            // A .pkg Wings installs itself shows its install stage instead of "Completed" (pkg_install.hpp).
+            const char *install_chip = install_label(job->install_state);
             const bool bad = job->status == "failed" || job->status == "waitingPassword" ||
-                             job->status == "waitingChoice";
-            ui::chip(list, type, r.x + 30.0f + title_w + 16.0f, r.y + 33.0f, status_label(job->status),
+                             job->status == "waitingChoice" || job->install_state == "install_failed";
+            ui::chip(list, type, r.x + 30.0f + title_w + 16.0f, r.y + 33.0f,
+                     install_chip != nullptr ? install_chip : row_status_label(job->status),
                      bad ? ui::color::action
                          : hui::gfx::mix(ui::Color::rgb(0xffffff, 0.16f), ui::Color::rgb(0x000000, 0.42f), f),
                      bad ? ui::color::night1 : hui::gfx::mix(ui::color::text2, ui::color::text, f), 16.0f);
@@ -567,6 +593,19 @@ void DownloadsScreen::draw(Frame &frame, bool focused) const
             if (job->status == "failed")
             {
                 add(job->error.empty() ? std::string(tr("The download failed")) : job->error);
+            }
+            else if (!job->install_text.empty())
+            {
+                // "Installing...", "Installed - find it on your home screen", "Install failed: ..."
+                add(job->install_text);
+            }
+            else if (job->status == "retrying")
+            {
+                // Wings retries a dropped connection by itself (download_auto_retry.hpp).
+                const std::string again = auto_retry_text(download_reconnect().view(job->id));
+                add(!again.empty() ? again : job->error);
+                if (job->total > 0.0)
+                    add(format_bytes(job->received) + " / " + format_bytes(job->total));
             }
             else if (job->status == "waitingPassword")
             {
@@ -593,26 +632,14 @@ void DownloadsScreen::draw(Frame &frame, bool focused) const
                 if (job->attempts > 1 && job->max_attempts > 0)
                     add(tr("Attempt {n} of {max}", {{"n", std::to_string(job->attempts)},
                                                     {"max", std::to_string(job->max_attempts)}}));
+                // "Reconnecting (try 2 of 3)" until new bytes arrive, then "Reconnected" briefly.
+                add(auto_retry_text(download_reconnect().view(job->id)));
             }
             // A failed install-selection keeps Pegasus' text and gets one plain line under it.
             const std::string install_hint =
                 job->status == "failed" ? install_failure_hint(job->error) : std::string();
-            const std::string tip = failed_download_tip(job->status, state.settings.connections);
             const ui::Color detail_color = hui::gfx::mix(ui::color::text3, ui::color::text, f);
-            if (!tip.empty())
-            {
-                // Pegasus' error, then the install hint when it matched, then the tip.
-                const bool both = !install_hint.empty();
-                const ui::Color soft = hui::gfx::mix(ui::color::text2, ui::color::text, f);
-                ui::text_fit(list, type.regular, detail, r.x + 30.0f, r.y + (both ? 62.0f : 68.0f), 18.0f,
-                             r.w - right_w - 80.0f, detail_color);
-                if (both)
-                    ui::text_fit(list, type.regular, install_hint, r.x + 30.0f, r.y + 80.0f, 18.0f,
-                                 r.w - 60.0f, soft);
-                ui::text_fit(list, type.regular, tip, r.x + 30.0f, r.y + (both ? 98.0f : 92.0f), 18.0f,
-                             r.w - 60.0f, soft);
-            }
-            else if (install_hint.empty())
+            if (install_hint.empty())
             {
                 ui::text_fit(list, type.regular, detail, r.x + 30.0f, r.y + 76.0f, 20.0f,
                              r.w - right_w - 80.0f, detail_color);
@@ -658,7 +685,7 @@ void DownloadsScreen::draw(Frame &frame, bool focused) const
         list.pop_clip();
     }
     if (probing_)
-        draw_busy(ctx_, frame.overlay, tr("Checking the link\xE2\x80\xA6"));
+        draw_busy(ctx_, frame.overlay, with_stop_hint(tr("Checking the link\xE2\x80\xA6")).c_str());
     banner_draw(frame, focused);
     prompt_.draw(ctx_, frame);
     confirm_.draw(ctx_, frame);

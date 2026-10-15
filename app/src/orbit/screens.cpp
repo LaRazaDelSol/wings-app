@@ -7,19 +7,25 @@
 
 #include "orbit/screens.hpp"
 
+#include "orbit/busy_cancel.hpp"
 #include "orbit/diagnostics.hpp"
+#include "orbit/download_auto_retry.hpp"
+#include "orbit/pkg_install.hpp"
 #include "orbit/editorial.hpp"
 #include "orbit/i18n.hpp"
+#include "orbit/link_flags.hpp"
 #include "orbit/model.hpp"
 #include "orbit/pegasus_manager.hpp"
 #include "orbit/pegasus_version.hpp"
 #include "orbit/title_export.hpp"
+#include "orbit/update_screen.hpp"
 #include "orbit/wings_update.hpp"
 
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
+#include <ctime>
 
 namespace orbit
 {
@@ -275,6 +281,8 @@ SettingsScreen::SettingsScreen(Context &context) : ListScreen(context)
         popularity_hub().apply_prefs(prefs_.popularity_enabled, prefs_.popularity_url);
         editorial_hub().apply_prefs(prefs_.notes_enabled, prefs_.carousel_enabled);
         wings_update().set_enabled(prefs_.update_check);
+        download_reconnect().set_enabled(prefs_.auto_reconnect);
+        pkg_installs().set_keep_files(prefs_.keep_pkg_files);
     }
 }
 
@@ -285,6 +293,8 @@ void SettingsScreen::store_local_prefs()
     popularity_hub().apply_prefs(prefs_.popularity_enabled, prefs_.popularity_url);
     editorial_hub().apply_prefs(prefs_.notes_enabled, prefs_.carousel_enabled);
     wings_update().set_enabled(prefs_.update_check);
+    download_reconnect().set_enabled(prefs_.auto_reconnect);
+    pkg_installs().set_keep_files(prefs_.keep_pkg_files);
 }
 
 std::vector<ListScreen::Row> SettingsScreen::build(std::vector<Act> *acts) const
@@ -327,7 +337,7 @@ void SettingsScreen::build_wings(std::vector<Row> &out, std::vector<Act> *acts) 
         accent = accent_id;
     };
     const auto add = [&](const char *title, std::string detail, std::string right,
-                         Act act = Act::none, bool disabled = false)
+                         Act act = Act::none, bool disabled = false, float progress = -1.0f)
     {
         Row row;
         row.section = section;
@@ -337,10 +347,26 @@ void SettingsScreen::build_wings(std::vector<Row> &out, std::vector<Act> *acts) 
         row.right = std::move(right);
         row.disabled = disabled;
         row.info = act == Act::none && !disabled;
+        row.progress = progress;
         out.push_back(std::move(row));
         if (acts != nullptr)
             acts->push_back(act);
     };
+    // Updates first: one row that says where the update stands; Select opens the full-screen update page
+    // (update_screen.hpp, the App owns it). The auto-check switch sits under it.
+    begin("Updates", theme::accent_about);
+    {
+        UpdateView view;
+        const bool newer = ctx_.wings_update_view && ctx_.wings_update_view(view);
+        add("Wings update",
+            newer ? tr("Select to see the new version and update step by step.")
+                  : std::string(tr("Select to look for a newer Wings now.")),
+            update_row_value(newer ? &view : nullptr), Act::wings_update);
+    }
+    add("Check for Wings updates",
+        tr("When Wings starts it asks GitHub if a newer release exists (needs Cover art on). Looking never "
+           "downloads or installs anything: that is a separate, confirmed step."),
+        prefs_.update_check ? std::string(tr("On")) : std::string(tr("Off")), Act::update_check);
     // Cover art: store posters are https links the app fetches itself.
     begin("Cover art", theme::accent_cover_art);
     if (ctx_.cover_art == nullptr)
@@ -381,6 +407,19 @@ void SettingsScreen::build_wings(std::vector<Row> &out, std::vector<Act> *acts) 
         std::string(), Act::reset_grid);
     add("Tile details", tr("When Store tiles show their link tier and regions"),
         std::string(tr(tile_details_label(prefs_.tile_details))), Act::tile_details);
+    // B-20: links that failed for the player on this console; Best skips them.
+    {
+        const LinkFlags *flags = link_flags();
+        const long count =
+            flags != nullptr ? static_cast<long>(flags->list(static_cast<std::int64_t>(std::time(nullptr))).size()) : 0;
+        add("Bad links",
+            tr("Links that failed for you on this console (kept {days} days). Best never picks them. Select to see "
+               "or clear them.",
+               {{"days", std::to_string(kFlagDays)}}),
+            trn(count, "{count} link", "{count} links"), Act::bad_links);
+        add("Clear all bad-link flags", tr("Every flagged link can be picked as Best again"), std::string(),
+            Act::clear_bad_links);
+    }
     // Link ranking: which link Wings lists first. Kept by Wings; Pegasus is not asked.
     begin("Link ranking", theme::accent_link_ranking);
     const auto any_or = [](const std::string &value)
@@ -426,17 +465,6 @@ void SettingsScreen::build_wings(std::vector<Row> &out, std::vector<Act> *acts) 
         prefs_.after_download == AfterDownload::scan ? std::string(tr("Ask ShadowMount to scan"))
                                                      : std::string(tr("Do nothing")),
         Act::after_download);
-    // Updates: a read-only look at the project's latest release (wings_update.hpp). Wings never installs itself.
-    begin("Updates", theme::accent_about);
-    add("Check for Wings updates",
-        tr("When Wings starts it asks GitHub if a newer release exists (needs Cover art on). It only tells you: "
-           "it never downloads or installs anything."),
-        prefs_.update_check ? std::string(tr("On")) : std::string(tr("Off")), Act::update_check);
-    {
-        const WingsUpdateStatus up = wings_update().status();
-        const WingsUpdateText words = wings_update_text(up);
-        add("Wings update", words.detail, words.value, Act::wings_update, !up.attached);
-    }
     // Editorial: short notes about games and the store carousel (editorial.hpp), both on by default.
     begin("Store extras", theme::accent_store_grid);
     add("Known-problem notes", tr("Show a short warning on a game's page when the project site lists one"),
@@ -540,6 +568,12 @@ void SettingsScreen::build_pegasus(std::vector<Row> &out, std::vector<Act> *acts
     add("Download connections",
         tr("Parallel connections Pegasus DL opens for each download (1 to 64)"),
         std::to_string(s.connections), Act::connections);
+    add("Auto-reconnect dropped downloads",
+        tr("When a download loses its connection, Wings retries it by itself (3 tries without progress)"),
+        prefs_.auto_reconnect ? std::string(tr("On")) : std::string(tr("Off")), Act::auto_reconnect);
+    add("Keep PKG files after install",
+        tr("After Wings installs a downloaded .pkg it deletes the file. Turn on to keep it (a failed install always keeps it)"),
+        prefs_.keep_pkg_files ? std::string(tr("On")) : std::string(tr("Off")), Act::keep_pkg_files);
     begin("Accounts", theme::accent_accounts);
     add("Real-Debrid", debrid_detail(s.real_debrid, true), debrid_right(s.real_debrid),
         Act::real_debrid);
@@ -651,6 +685,8 @@ void SettingsScreen::open_token_menu(bool torbox)
     add("refresh", "Check the token again", tr("Ask the service whether it is still valid"),
         view.configured);
     add("clear", "Remove the token", tr("Pegasus DL forgets the account"), view.configured);
+    if (torbox)
+        add("open-site", "Open TorBox website", tr("See what TorBox is preparing for you, in the PS5 browser"), true);
     list_for_ = ListFor::token_menu;
     list_.open(torbox ? "TorBox" : "Real-Debrid", debrid_detail(view, true), std::move(items),
                ListDialog::Mode::single);
@@ -773,6 +809,15 @@ void SettingsScreen::on_confirm(int row, Feedback &feedback, Intent &intent)
                          "This changes only Wings."),
                       tr("Reset"), tr("Cancel"), false);
         break;
+    case Act::bad_links:
+        open_bad_links();
+        break;
+    case Act::clear_bad_links:
+        pending_ = Pending::clear_bad_links;
+        confirm_.open(tr("Clear all bad-link flags?"),
+                      tr("Wings forgets every link that failed for you. Best may pick them again."), tr("Clear all"),
+                      tr("Cancel"), true);
+        break;
     case Act::pref_firmware:
         open_choice(ListFor::firmware, "Preferred firmware", kFirmwareChoices,
                     kFirmwareChoiceCount, prefs_.firmware);
@@ -822,6 +867,18 @@ void SettingsScreen::on_confirm(int row, Feedback &feedback, Intent &intent)
         intent.toast = prefs_.update_check ? tr("Wings will check for updates when it starts")
                                            : tr("Wings will not check for updates");
         break;
+    case Act::auto_reconnect:
+        prefs_.auto_reconnect = !prefs_.auto_reconnect;
+        store_local_prefs();
+        intent.toast = prefs_.auto_reconnect ? tr("Dropped downloads reconnect by themselves")
+                                             : tr("Dropped downloads stay failed");
+        break;
+    case Act::keep_pkg_files:
+        prefs_.keep_pkg_files = !prefs_.keep_pkg_files;
+        store_local_prefs();
+        intent.toast = prefs_.keep_pkg_files ? tr("PKG files are kept after install")
+                                             : tr("PKG files are deleted after install");
+        break;
     case Act::notes:
         prefs_.notes_enabled = !prefs_.notes_enabled;
         store_local_prefs();
@@ -836,31 +893,18 @@ void SettingsScreen::on_confirm(int row, Feedback &feedback, Intent &intent)
         break;
     case Act::wings_update:
     {
+        UpdateView view;
+        if (ctx_.wings_update_view && ctx_.wings_update_view(view))
+        {
+            intent.kind = Intent::Kind::open_update;
+            break;
+        }
         const WingsUpdateStatus up = wings_update().status();
         if (!up.attached || up.busy)
             break;
-        if (up.advice == WingsAdvice::newer)
-        {
-            // How to install it by hand: a scrolling list (a confirm dialog would cut the steps off).
-            const WingsUpdateGuide guide = wings_update_guide(up);
-            std::vector<ListItem> items;
-            for (const WingsUpdateStep &step : guide.steps)
-            {
-                ListItem item;
-                item.label = step.label;
-                item.detail = step.detail;
-                items.push_back(std::move(item));
-            }
-            list_for_ = ListFor::wings_update;
-            list_.open(guide.title, guide.subtitle, std::move(items), ListDialog::Mode::single);
-            feedback.play(hui::audio::Cue::modal_open);
-        }
-        else
-        {
-            // The row says why when the network is not ready.
-            intent.toast = wings_update().check_now() ? tr("Checking for a newer Wings...")
-                                                      : tr("Could not check for updates");
-        }
+        // The row says why when the network is not ready.
+        intent.toast = wings_update().check_now() ? tr("Checking for a newer Wings...")
+                                                  : tr("Could not check for updates");
         break;
     }
     case Act::pegasus_startup:
@@ -1004,10 +1048,43 @@ void SettingsScreen::open_choice(ListFor which, const char *title, const char *c
                std::move(items), ListDialog::Mode::single);
 }
 
+void SettingsScreen::open_bad_links()
+{
+    bad_link_ids_.clear();
+    const LinkFlags *flags = link_flags();
+    if (flags == nullptr)
+        return;
+    std::vector<ListItem> items;
+    for (const auto &[id, flag] : flags->list(static_cast<std::int64_t>(std::time(nullptr))))
+    {
+        ListItem item;
+        item.label = flag.title.empty() ? std::string(tr("A link")) : flag.title;
+        item.detail = flag_line(flag);
+        item.right = tr("Clear");
+        items.push_back(std::move(item));
+        bad_link_ids_.push_back(id);
+    }
+    if (items.empty())
+    {
+        list_for_ = ListFor::none;
+        toast_ = tr("No bad links on this console");
+        return;
+    }
+    list_for_ = ListFor::bad_links;
+    list_.open(tr("Bad links"), tr("Links that failed for you on this console. Select one to clear its flag."),
+               std::move(items), ListDialog::Mode::single);
+}
+
 Intent SettingsScreen::update(const InputFrame &input, float dt, Feedback &feedback, bool focused)
 {
     static const InputFrame idle{};
     Intent intent;
+    // Circle on "Asking Pegasus DL...": back at once, the late answer is ignored (B-18).
+    if (ctx_.store.lane_state(Store::lane_admin).busy && input.is_pressed(Action::back))
+    {
+        ctx_.store.cancel(Store::lane_admin);
+        return intent;
+    }
     const bool had_confirm = confirm_.is_open();
     const bool had_list = list_.is_open();
     const bool had_prompt = prompt_.is_open();
@@ -1096,6 +1173,15 @@ Intent SettingsScreen::update(const InputFrame &input, float dt, Feedback &feedb
                 ctx_.reset_store_grid();
             intent.toast = tr("Store grid reset");
         }
+        else if (pending_ == Pending::clear_bad_links)
+        {
+            if (LinkFlags *flags = link_flags())
+            {
+                flags->clear_all();
+                save_link_flags();
+            }
+            intent.toast = tr("Bad-link flags cleared");
+        }
         else if (pending_ == Pending::clear_token)
         {
             SettingsPatch patch;
@@ -1157,6 +1243,20 @@ Intent SettingsScreen::update(const InputFrame &input, float dt, Feedback &feedb
                 toast_ = tr("Link preference saved");
             }
         }
+        else if (list_for_ == ListFor::bad_links)
+        {
+            // Select on a flag clears it; the list opens again with the rest.
+            if (chosen >= 0 && chosen < static_cast<int>(bad_link_ids_.size()))
+            {
+                if (LinkFlags *flags = link_flags())
+                {
+                    flags->clear(bad_link_ids_[static_cast<std::size_t>(chosen)]);
+                    save_link_flags();
+                }
+                toast_ = tr("Bad-link flag cleared");
+                open_bad_links();
+            }
+        }
         else if (list_for_ == ListFor::token_menu && chosen >= 0 &&
                  chosen < static_cast<int>(menu_codes_.size()))
         {
@@ -1191,6 +1291,19 @@ Intent SettingsScreen::update(const InputFrame &input, float dt, Feedback &feedb
                         confirm_.notice(view.valid ? tr("{service} is ready", {{"service", name}})
                                                    : tr("{service} is not valid", {{"service", name}}),
                                         debrid_detail(view, true));
+                    });
+            }
+            else if (code == "open-site")
+            {
+                ctx_.store.call<bool>(
+                    Store::lane_admin, [](Backend &b) { return b.open_url(kTorboxDashboardUrl); },
+                    [this](Result<bool> &&r)
+                    {
+                        if (!r.ok())
+                        {
+                            pending_ = Pending::notice;
+                            confirm_.notice(tr("Could not open the PS5 browser"), r.error);
+                        }
                     });
             }
             else if (code == "clear")
@@ -1240,7 +1353,7 @@ void SettingsScreen::draw(Frame &frame, bool focused) const
     ListScreen::draw(frame, focused && !modal());
     Context &ctx = ctx_;
     if (ctx_.store.lane_state(Store::lane_admin).busy)
-        draw_busy(ctx_, frame.overlay, tr("Asking Pegasus DL\xE2\x80\xA6"));
+        draw_busy(ctx_, frame.overlay, with_stop_hint(tr("Asking Pegasus DL\xE2\x80\xA6")).c_str());
     prompt_.draw(ctx, frame);
     list_.draw(ctx, frame);
     picker_.draw(ctx, frame);

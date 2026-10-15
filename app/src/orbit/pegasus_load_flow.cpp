@@ -105,6 +105,18 @@ LoadCommand PegasusLoadFlow::tick(const LoadFacts &facts)
     return LoadCommand::none;
 }
 
+LoadCommand PegasusLoadFlow::cancel_by_player()
+{
+    if (!cancellable())
+        return LoadCommand::none;
+    const bool running = busy();
+    state_ = LoadState::offering;
+    fail_ = LoadFail::none;
+    retry_run_ = false;
+    retry_since_ = -1.0;
+    return running ? LoadCommand::cancel : LoadCommand::none;
+}
+
 LoadCommand PegasusLoadFlow::choose(LoadChoice choice, const LoadFacts &facts)
 {
     if (!choosable() || facts.health_ok)

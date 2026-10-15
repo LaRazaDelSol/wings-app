@@ -21,7 +21,12 @@
 #include "orbit/mark.hpp"
 #include "orbit/screens.hpp"
 #include "orbit/panels.hpp"
+#include "orbit/editorial.hpp"
+#include "orbit/pegasus_manager.hpp"
 #include "orbit/popularity.hpp"
+#include "orbit/wings_helper_client.hpp"
+#include "orbit/wings_install.hpp"
+#include "orbit/wings_update.hpp"
 #include "orbit/store.hpp"
 #include "orbit/i18n.hpp"
 #include "ui/fonts.hpp"
@@ -34,11 +39,15 @@
 
 #include <unistd.h>
 
+#include <algorithm>
+#include <atomic>
 #include <cstdio>
+#include <filesystem>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -142,6 +151,190 @@ Step run(float seconds, std::function<void(orbit::App &, orbit::host::FakeBacken
     step.wait = seconds;
     step.act = std::move(act);
     return step;
+}
+
+// Settings > Wings > Updates: the real WingsUpdate and WingsInstaller run against this stand-in release
+// and a stand-in Wings update helper (its HTTP status, no files), so the screens are the ones the console shows.
+class UpdateKit final : public orbit::DocFetcher, public orbit::StreamingDownloader, public orbit::http::Transport
+{
+  public:
+    UpdateKit() : helper(*this, [](const std::string &, std::string *) { return true; })
+    {
+        package.resize(300000);
+        for (std::size_t i = 0; i < package.size(); ++i)
+            package[i] = static_cast<char>((i * 31 + 7) & 0xff);
+        const unsigned char magic[4] = {0x19, 0x01, 0x54, 0x19};
+        for (std::size_t i = 0; i < 4; ++i)
+            package[static_cast<std::size_t>(orbit::kUfs2MagicOffset) + i] = static_cast<char>(magic[i]);
+        sha = orbit::sha256_hex(package);
+        root = (std::filesystem::temp_directory_path() / "wings-preview-update").string();
+    }
+    orbit::DocResult get(const std::string &, std::size_t) override
+    {
+        const std::string base = "https://github.com/LaRazaDelSol/wings-app/releases/download/v0.1.2/";
+        orbit::DocResult result;
+        result.status = 200;
+        result.body = "{\"tag_name\":\"v0.1.2\",\"draft\":false,\"prerelease\":false,\"assets\":["
+                      "{\"name\":\"PPSA99178.ffpkg\",\"size\":" + std::to_string(package.size()) +
+                      ",\"digest\":\"sha256:" + sha + "\",\"browser_download_url\":\"" + base +
+                      "PPSA99178.ffpkg\"},{\"name\":\"PPSA99178.ffpkg.sha256\",\"size\":90,\"digest\":\"sha256:" +
+                      std::string(64, 'a') + "\",\"browser_download_url\":\"" + base + "PPSA99178.ffpkg.sha256\"}]}";
+        return result;
+    }
+    bool ready(std::string *) override
+    {
+        return true;
+    }
+    std::string get_stream(const std::string &url, std::uint64_t, const orbit::StreamHooks &hooks,
+                           const std::function<bool(const std::uint8_t *, std::size_t)> &sink, int *status) override
+    {
+        *status = 200;
+        const bool digest = url.size() > 7 && url.compare(url.size() - 7, 7, ".sha256") == 0;
+        const std::string body = digest ? sha + "  PPSA99178.ffpkg\n" : package;
+        std::size_t at = 0;
+        while (at < body.size())
+        {
+            // The download rests part-way while `hold` is set, so the progress bar can be photographed.
+            while (!digest && hold && at > body.size() * 4 / 10 && !(hooks.cancel && hooks.cancel()))
+                usleep(10000);
+            if (hooks.cancel && hooks.cancel())
+                return "cancelled";
+            const std::size_t piece = std::min<std::size_t>(8192, body.size() - at);
+            if (!sink(reinterpret_cast<const std::uint8_t *>(body.data()) + at, piece))
+                return "sink";
+            at += piece;
+            if (!digest)
+                usleep(300);
+        }
+        return {};
+    }
+    // The stand-in helper, like the real one (build and API from app/helper/version.h): a download streams in
+    // pieces (resting part-way while `hold` is set) and stops at "downloaded"; install only places it.
+    orbit::http::Response send(const orbit::http::Request &request) override
+    {
+        orbit::http::Response r;
+        r.status = 200;
+        std::lock_guard<std::mutex> lock(helper_mutex);
+        if (request.path == "/wings-helper/v1/download")
+        {
+            phase = "downloading";
+            received = 0;
+            r.status = 202;
+        }
+        else if (request.path == "/wings-helper/v1/install")
+        {
+            phase = "placing";
+            r.status = 202;
+        }
+        else if (request.path == "/wings-helper/v1/cancel")
+            phase = "idle";
+        else if (phase == "downloading")
+        {
+            if (!(hold && received > package.size() * 4 / 10))
+                received = std::min<std::uint64_t>(package.size(), received + 24000);
+            if (received >= package.size())
+                phase = "downloaded";
+        }
+        else if (phase == "placing")
+            phase = "placed";
+        // Like the real helper: only after placing does it name what it placed and keep the old file as .old.
+        const bool placed = phase == "placed";
+        r.body = std::string("{\"helper\":\"") + orbit::kWingsHelperBuild + "\",\"api\":" +
+                 std::to_string(orbit::kWingsHelperApi) + ",\"phase\":\"" + phase +
+                 "\",\"version\":\"v0.1.2\",\"received\":" +
+                 std::to_string(received) + ",\"size\":" + std::to_string(package.size()) + ",\"error\":\"\",\"target\":\"" +
+                 (placed ? std::string("wings") : target) + "\",\"installed_version\":\"" +
+                 (placed ? "0.1.2" : "") + "\",\"old_kept\":" + (placed ? "true" : "false") + "}";
+        return r;
+    }
+    // A fresh temporary "console": the helper sees an empty /data/homebrew (optionally with the player's own
+    // copy, or a folder copy that blocks the install), then the check for a newer release.
+    void reset(bool own_copy, bool folder_copy)
+    {
+        namespace fs = std::filesystem;
+        orbit::wings_installer().wait_idle();
+        std::error_code ec;
+        fs::remove_all(root, ec);
+        fs::create_directories(root, ec);
+        {
+            std::lock_guard<std::mutex> lock(helper_mutex);
+            phase = "idle";
+            received = 0;
+            target = folder_copy ? "folder" : own_copy ? "manual" : "none";
+        }
+        hold = false;
+        helper.sleep_ms = [](int) {};
+        orbit::WingsInstallConfig install;
+        install.downloader = this;
+        install.helper = &helper;
+        install.note_dir = root;
+        install.running = "00.001.001";
+        install.poll_ms = 15;
+        orbit::wings_installer().attach(std::move(install));
+        orbit::WingsUpdateConfig update;
+        update.docs = this;
+        update.ready = [](std::string *) { return true; };
+        update.running = "00.001.001";
+        orbit::wings_update().attach(std::move(update));
+        orbit::wings_update().set_enabled(true);
+        orbit::wings_update().check_now();
+        orbit::wings_update().wait_idle();
+    }
+    void download()
+    {
+        const orbit::WingsUpdateStatus up = orbit::wings_update().status();
+        orbit::WingsRelease release;
+        release.tag = up.latest_tag;
+        release.asset = up.asset;
+        orbit::wings_installer().start_download(release);
+    }
+    std::string package;
+    std::string sha;
+    std::string root;
+    std::atomic<bool> hold{false};
+    std::mutex helper_mutex;
+    std::string phase = "idle";
+    std::string target = "none";
+    std::uint64_t received = 0;
+    orbit::WingsHelperClient helper;
+};
+
+UpdateKit &update_kit()
+{
+    static UpdateKit kit;
+    return kit;
+}
+
+// A small popularity index for the fixture games, with their 16:9 pictures (the fake backend serves the
+// files whatever the address says), so the Store's hero shot and the game page show art.
+void install_showcase_index()
+{
+    int count = 0;
+    const orbit::host::FixtureGame *games = orbit::host::fixture_games(&count);
+    std::string json = "{\"schemaVersion\":1,\"generatedAt\":\"2026-10-12T00:00:00Z\","
+                       "\"attribution\":{\"igdb\":\"Ratings and popularity data from IGDB.com\"},\"titles\":{";
+    for (int i = 0; i < count; ++i)
+    {
+        const std::string base = std::string("https://fixtures.example/art/") + games[i].slug;
+        json += std::string(i ? "," : "") + "\"" + games[i].title_id + "\":{\"score\":" + std::to_string(97 - i * 5) +
+                ",\"rating\":" + std::to_string(90 - i * 2) + ",\"ratingCount\":" + std::to_string(5200 - i * 300) +
+                ",\"confidence\":1.0,\"sources\":[\"igdb\"],\"fetchedAt\":\"2026-10-12\",\"hero\":\"" + base +
+                "/hero.jpg\",\"heroLow\":\"" + base + "/low.jpg\"}";
+    }
+    json += "}}";
+    auto index = std::make_shared<orbit::PopularityIndex>();
+    std::string why;
+    if (orbit::PopularityIndex::parse(json, index.get(), &why))
+        orbit::popularity_hub().set_index(index);
+    orbit::popularity_hub().set_enabled(true);
+    orbit::editorial_hub().set_enabled(false, true); // no notes, the hero carousel on
+}
+
+void remove_showcase_index()
+{
+    orbit::popularity_hub().set_enabled(false);
+    orbit::popularity_hub().set_index(nullptr);
+    orbit::editorial_hub().set_enabled(false, false);
 }
 
 std::vector<Scenario> scenarios()
@@ -842,6 +1035,73 @@ std::vector<Scenario> scenarios()
           move(Direction::down), move(Direction::down), tap(Action::confirm),
           pause(0.6f, "logs-clear-confirm"), tap(Action::back, 0.4f), tap(Action::north),
           pause(0.8f, "logs-diagnostics")}});
+    // README screenshots: the real UI with free-game art (host/fixtures, see ART-CREDITS.md). Outputs:
+    // showcase-store-hero.png, showcase-store-grid.png, showcase-game-page.png, showcase-downloads.png.
+    const auto showcase_on = run(0.1f,
+                                 [](App &, FakeBackend &backend)
+                                 {
+                                     backend.set_store_art(true);
+                                     install_showcase_index();
+                                 });
+    const auto showcase_off = run(0.1f, [](App &, FakeBackend &) { remove_showcase_index(); });
+    list.push_back({"showcase-store",
+                    Mode::normal,
+                    {showcase_on, tab(orbit::tab::store), wait(1500), pause(0.8f, "showcase-store-hero"),
+                     move(Direction::down), wait(500), pause(0.8f, "showcase-store-grid"), showcase_off}});
+    list.push_back({"showcase-game-page",
+                    Mode::normal,
+                    {showcase_on, tab(orbit::tab::store), wait(900), open_package("pkg1"), wait(1200),
+                     pause(0.8f, "showcase-game-page"), showcase_off}});
+    list.push_back({"showcase-downloads",
+                    Mode::normal,
+                    {showcase_on, tab(orbit::tab::downloads), wait(1200), pause(0.8f, "showcase-downloads"),
+                     showcase_off}});
+    // Updating Wings on the real update and install code: the release is a generated stand-in (UpdateKit).
+    const auto updates_setup = [](bool own_copy, bool folder_copy)
+    { return run(0.1f, [own_copy, folder_copy](App &, FakeBackend &) { update_kit().reset(own_copy, folder_copy); }); };
+    const auto updates_wait = run(0.1f, [](App &, FakeBackend &) { orbit::wings_installer().wait_idle(); });
+    // The download rests part-way (hold) so the progress can be photographed.
+    const auto updates_download_held = run(0.1f,
+                                           [](App &, FakeBackend &)
+                                           {
+                                               update_kit().hold = true;
+                                               update_kit().download();
+                                           });
+    const auto updates_release = run(0.1f, [](App &, FakeBackend &) { update_kit().hold = false; });
+    const auto updates_page = run(0.1f, [](App &app, FakeBackend &) { app.show_update(false); });
+    const auto updates_dialog = run(0.1f, [](App &app, FakeBackend &) { app.show_update(true); });
+    // The README pictures, one per screen, in showcase mode (main() turns it on for this scenario): only the
+    // fixture games, with their real titles, covers and heroes. Outputs: readme-store.png (the resting hero
+    // shot), readme-store-grid.png, readme-game-page.png, readme-downloads.png, readme-library.png,
+    // readme-files.png, readme-settings.png, readme-update.png (the update page, downloading).
+    list.push_back({"readme",
+                    Mode::normal,
+                    {showcase_on, tab(orbit::tab::store), wait(3000), pause(1.5f, "readme-store"),
+                     move(Direction::down), wait(800), pause(0.8f, "readme-store-grid"), open_package("pkg1"),
+                     wait(1500), pause(0.8f, "readme-game-page"), tap(Action::back, 0.5f),
+                     tab(orbit::tab::downloads), wait(1200), pause(0.8f, "readme-downloads"),
+                     tab(orbit::tab::library), wait(1200), pause(1.2f, "readme-library"), tab(orbit::tab::files),
+                     wait(800), open_files("/data/pegasus-dl/downloads"), wait(500), pause(0.8f, "readme-files"),
+                     tab(orbit::tab::settings), wait(500), pause(0.8f, "readme-settings"), updates_setup(true, false),
+                     updates_download_held, updates_page, wait(1000), pause(0.8f, "readme-update"), updates_release,
+                     updates_wait, tap(Action::back, 0.5f), showcase_off}});
+    // The update flow as the player sees it: the startup dialog, then Update now opens the page and starts the
+    // download. Outputs: update-dialog.png, update-downloading.png, update-ready.png, update-installed.png.
+    list.push_back({"settings-update-flow",
+                    Mode::normal,
+                    {updates_setup(true, false), tab(orbit::tab::settings), wait(500), updates_dialog, wait(800),
+                     pause(0.8f, "update-dialog"), run(0.1f, [](App &, FakeBackend &) { update_kit().hold = true; }),
+                     tap(Action::confirm), wait(1000), pause(0.8f, "update-downloading"), updates_release,
+                     updates_wait, wait(500), pause(0.8f, "update-ready"),
+                     run(0.1f, [](App &, FakeBackend &) { orbit::wings_installer().install(true); }), updates_wait,
+                     wait(500), pause(0.8f, "update-installed"), tap(Action::back, 0.5f)}});
+    // A folder copy is in the way: Wings will not place the file and the page shows the steps. Output:
+    // update-manual.png.
+    list.push_back({"settings-update-blocked",
+                    Mode::normal,
+                    {updates_setup(false, true), tab(orbit::tab::settings),
+                     run(0.1f, [](App &, FakeBackend &) { update_kit().download(); }), updates_wait, wait(300),
+                     updates_page, wait(1000), pause(0.8f, "update-manual"), tap(Action::back, 0.5f)}});
     // Waiting state on a tab other than the Store, and tab switching by L1/R1.
     list.push_back({"offline-tabs",
                     Mode::offline,
@@ -923,6 +1183,10 @@ int main(int argc, char **argv)
             continue;
         ++ran;
         orbit::host::FakeBackend backend(scenario.mode);
+        backend.set_fixture_dir(assets + "/../host/fixtures");
+        // The README pictures show only the fixture games; the catalogue must hold them before the Store starts.
+        if (std::string(scenario.name) == "readme")
+            backend.set_showcase(true);
         orbit::Store store(backend);
         orbit::ArtCache art(backend, textures);
         store.start();

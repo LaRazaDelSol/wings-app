@@ -43,22 +43,64 @@ RUNTIME_INPUTS := tools/rebuild-libc.sh tools/build-host-tools.sh tools/ninja-bu
 	$(wildcard tooling/native/*.cpp tooling/native/*.hpp) \
 	$(wildcard tooling/native/runtime/*.txt)
 
-.PHONY: app ffpkg ffpfsc packages deps opengl libc preview test fonts clean distclean help
+.PHONY: app ffpkg ffpfsc packages deps opengl libc preview test fonts clean distclean help \
+	helper helper-test
 
-app: $(RUNTIME) opengl
+app: $(RUNTIME) opengl helper
 	@printf '%s\n' '==> [app] Compiling, linking, signing and assembling the app folder'
 	@bash tools/build.sh Folder
 
-ffpkg: $(RUNTIME) opengl
+ffpkg: $(RUNTIME) opengl helper
 	@printf '%s\n' '==> [ffpkg] Building the app folder and its UFS2 image'
 	@bash tools/build.sh Ffpkg
 
-ffpfsc: $(RUNTIME) opengl
+ffpfsc: $(RUNTIME) opengl helper
 	@printf '%s\n' '==> [ffpfsc] Building the app folder and its compressed image'
 	@bash tools/build.sh Ffpfsc
 
-packages: $(RUNTIME) opengl
+packages: $(RUNTIME) opengl helper
 	@bash tools/build.sh All
+
+# The update helper (helper/): a payload the app sends to the console's ELF loader to place a
+# downloaded Wings release in /data/homebrew. Built like Orbit Store's backend: the payload SDK's
+# clang, static curl/OpenSSL from the PacBrew sysroot, cJSON compiled in, the CA bundle embedded.
+# It lands in assets/, so build.sh ships it as /app0/assets/helper/wings-helper.elf.
+HELPER_SDK := .deps/native/ps5-payload-sdk
+HELPER_SYSROOT := .deps/pacbrew/v0.40.2/sysroot/user/homebrew
+HELPER_CORE := helper/install.c helper/server.c third_party/cjson/cJSON.c
+HELPER_HEADERS := $(wildcard helper/*.h) third_party/cjson/cJSON.h build/helper/ca.h
+HELPER_CFLAGS := -std=c11 -O2 -Wall -Wextra -Werror -D_FILE_OFFSET_BITS=64 \
+	-Ihelper -Ithird_party/cjson -Ibuild/helper
+HELPER_LIBS := -l:libcurl.a -l:libpsl.a -l:libssl.a -l:libcrypto.a -l:libzstd.a -l:libz.a -lpthread
+HELPER_HOST_CC ?= clang-18
+HELPER_ELF := assets/helper/wings-helper.elf
+
+helper: $(HELPER_ELF)
+
+build/helper/ca.h: assets/ca-bundle.crt
+	@mkdir -p $(@D)
+	@{ printf 'static const char wings_helper_ca[] =\n'; \
+	   sed -e 's/\r$$//' -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/^/"/' -e 's/$$/\\n"/' $<; \
+	   printf ';\n'; } > $@
+
+$(HELPER_ELF): helper/main.c $(HELPER_CORE) $(HELPER_HEADERS) Makefile
+	@printf '%s\n' '==> [helper] Building the update helper payload'
+	@mkdir -p $(@D)
+	LLVM_CONFIG=$${LLVM_CONFIG:-$$(command -v llvm-config-18)} $(HELPER_SDK)/bin/prospero-clang $(HELPER_CFLAGS) -Wno-unreachable-code-generic-assoc \
+		-I$(HELPER_SYSROOT)/include helper/main.c $(HELPER_CORE) -o $@ \
+		-L$(HELPER_SYSROOT)/lib $(HELPER_LIBS)
+	LLVM_CONFIG=$${LLVM_CONFIG:-$$(command -v llvm-config-18)} $(HELPER_SDK)/bin/prospero-strip --strip-debug $@
+
+# Host tests of the helper against a fake GitHub on 127.0.0.1 (needs libcurl and OpenSSL dev
+# packages on the host).
+build/helper/helper-test: $(HELPER_CORE) $(HELPER_HEADERS) tests/helper/helper_test.c Makefile
+	@mkdir -p $(@D)
+	$(HELPER_HOST_CC) $(HELPER_CFLAGS) -g -D_DEFAULT_SOURCE -DWINGS_HELPER_TEST \
+		-fsanitize=address,undefined -fno-sanitize-recover=undefined \
+		$(HELPER_CORE) tests/helper/helper_test.c -o $@ -lcurl -lssl -lcrypto -lpthread
+
+helper-test: build/helper/helper-test
+	@./build/helper/helper-test
 
 deps:
 	@bash tools/setup-test-dependencies.sh >/dev/null
@@ -90,7 +132,7 @@ fonts:
 
 clean:
 	@rm -rf -- build dist
-	@rm -f -- $(RUNTIME)
+	@rm -f -- $(RUNTIME) $(HELPER_ELF)
 
 distclean: clean
 	@rm -rf -- .deps
@@ -101,4 +143,6 @@ help:
 	  'make ffpkg      Also build dist/PPSA99178.ffpkg (ShadowMountPlus image)' \
 	  'make preview    Render every screen on this machine to PNG' \
 	  'make test       Host unit tests (sanitizers on)' \
+	  'make helper     Build the update helper payload (assets/helper/wings-helper.elf)' \
+	  'make helper-test  Host tests of the update helper' \
 	  'make fonts      Rebake the Inter SDF fonts'

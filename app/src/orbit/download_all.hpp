@@ -104,7 +104,8 @@ public:
                std::function<void(const LinkRef &)> queued, std::function<void()> finished);
     // Every frame: counts down a wait between attempts and starts the next one.
     void tick(float dt);
-    // Stops after the part in flight (it still counts if it queues); a wait ends at once.
+    // Stops at once: a wait ends, a part in flight is let go (its late answer
+    // changes nothing; the screen also cancels the Store's link action).
     void cancel();
 
     // The toast of a clean run, and the notice (title + message) of any other end.

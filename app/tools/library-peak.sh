@@ -9,5 +9,7 @@ mkdir -p "$out"
 cxx=${HOST_CXX:-clang++}
 "$cxx" -std=c++20 -O2 -w -pthread -I"$root/src" -I"$root/src/wings_core/include" \
     "$root/tests/tools/library_peak.cpp" "$root/src/orbit/pegasus_backend.cpp" \
+    "$root/src/orbit/download_auto_retry.cpp" "$root/src/orbit/pkg_install.cpp" \
+    "$root/src/orbit/i18n.cpp" "$root/src/orbit/json.cpp" "$root/src/core/save_file.cpp" \
     "$root"/src/wings_core/src/*.cpp -o "$out/library_peak"
 "$out/library_peak" "${1:-/recon/samples/library.json}"

@@ -9,9 +9,11 @@
 // and routes the controller.
 
 #include "orbit/screens.hpp"
+#include "orbit/busy_cancel.hpp"
 #include "orbit/editorial.hpp"
 #include "orbit/filter_menu.hpp"
 #include "orbit/game_hero.hpp"
+#include "orbit/link_flags.hpp"
 
 #include "orbit/model.hpp"
 #include "orbit/popularity.hpp"
@@ -20,6 +22,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <ctime>
+#include <iterator>
 
 namespace orbit
 {
@@ -205,7 +209,7 @@ void StoreScreen::focus()
 bool StoreScreen::modal() const
 {
     return prompt_.is_open() || confirm_.is_open() || list_.is_open() || folder_ask_.is_open() ||
-           panel_ != Panel::none || batch_.active ||
+           panel_ != Panel::none || batch_.active || torbox_wait_.active() ||
            ctx_.store.link_action().busy;
 }
 
@@ -1436,10 +1440,46 @@ void StoreScreen::start_single(const std::string &service)
 {
     if (folder_ask_.guard(ctx_, [this, service] { start_single(service); }))
         return; // the first download asks for the folder; it resumes here
+    ctx_.store.set_link_flag_id(ref_flag_id(page_, pending_ref_), page_.title);
     ctx_.store.start_link(pending_ref_.package_id, pending_ref_.link_index, service);
     popularity_hub().count_download(page_.title_ids); // "Your most downloaded"
     single_ref_ = pending_ref_;
+    single_service_ = service;
     single_waiting_ = true;
+}
+
+// B-19: the same link again, while TorBox prepares it.
+void StoreScreen::retry_torbox()
+{
+    ctx_.store.set_link_flag_id(ref_flag_id(page_, torbox_ref_), page_.title);
+    ctx_.store.start_link(torbox_ref_.package_id, torbox_ref_.link_index, torbox_service_);
+    single_ref_ = torbox_ref_;
+    single_service_ = torbox_service_;
+    single_waiting_ = true;
+}
+
+void StoreScreen::open_torbox_notice()
+{
+    pending_ = Pending::torbox_preparing;
+    std::vector<ListItem> items(3);
+    items[0].label = tr("Try again");
+    items[1].label = tr("Open TorBox website");
+    items[2].label = tr("OK");
+    list_.open(torbox_preparing_title(), torbox_gave_up_text(), std::move(items), ListDialog::Mode::single);
+}
+
+void StoreScreen::open_torbox_site()
+{
+    ctx_.store.call<bool>(
+        Store::lane_admin, [](Backend &b) { return b.open_url(kTorboxDashboardUrl); },
+        [this](Result<bool> &&r)
+        {
+            if (!r.ok())
+            {
+                pending_ = Pending::notice;
+                confirm_.notice(tr("Could not open the PS5 browser"), r.error);
+            }
+        });
 }
 
 // A card: one link runs the link flow; a multipart set offers all parts or one.
@@ -1483,6 +1523,53 @@ void StoreScreen::activate_mirror(int mirror, Feedback &feedback)
                                : warning,
                std::move(items), ListDialog::Mode::single);
     feedback.play(hui::audio::Cue::modal_open);
+}
+
+namespace
+{
+// "Mark as bad" reasons, in the order the list shows them.
+constexpr FlagReason kBadReasons[] = {FlagReason::removed,        FlagReason::wrong_file, FlagReason::password,
+                                      FlagReason::broken_archive, FlagReason::host_error, FlagReason::by_hand};
+} // namespace
+
+void StoreScreen::choose_flag_item(int mirror, Feedback &feedback)
+{
+    if (mirror < 0 || mirror >= static_cast<int>(page_.page.mirrors.size()))
+        return;
+    if (page_.page.mirrors[static_cast<std::size_t>(mirror)].flagged_link(page_.page) >= 0)
+    {
+        mark_mirror(mirror, 0);
+        return;
+    }
+    card_mirror_ = mirror;
+    std::vector<ListItem> reasons;
+    for (std::string label : {std::string(tr("File removed")), std::string(tr("Wrong file")),
+                              std::string(tr("Password never works")), std::string(tr("Broken archive")),
+                              std::string(tr("Host error")), std::string(tr("Other"))})
+    {
+        ListItem item;
+        item.label = std::move(label);
+        reasons.push_back(std::move(item));
+    }
+    pending_ = Pending::bad_reason;
+    list_.open(tr("Mark as bad"), tr("What went wrong with this link?"), std::move(reasons),
+               ListDialog::Mode::single);
+    feedback.play(hui::audio::Cue::modal_open);
+}
+
+void StoreScreen::mark_mirror(int mirror, int reason)
+{
+    if (mirror < 0 || mirror >= static_cast<int>(page_.page.mirrors.size()))
+        return;
+    const FlagReason why =
+        reason >= 1 && reason <= static_cast<int>(std::size(kBadReasons)) ? kBadReasons[reason - 1] : FlagReason::none;
+    const std::vector<int> links = page_.page.mirrors[static_cast<std::size_t>(mirror)].links;
+    mark_page_links(&page_.page, links, why, flag_title_id(page_), static_cast<std::int64_t>(std::time(nullptr)),
+                    page_.title);
+    // Best and the card order follow the new flag.
+    rerank_game_view(&page_, source_order(), link_prefs_);
+    row_ = first_focusable(page_);
+    dirty_ = true;
 }
 
 void StoreScreen::activate_row(Feedback &feedback)
@@ -1558,7 +1645,10 @@ void StoreScreen::start_batch(const std::string &service)
     batch_.begin(
         std::move(parts), parts_plan_.host,
         [this, service](const LinkRef &ref, DownloadAll::Done done)
-        { ctx_.store.start_link(ref.package_id, ref.link_index, service, std::move(done)); },
+        {
+            ctx_.store.set_link_flag_id(ref_flag_id(page_, ref), page_.title);
+            ctx_.store.start_link(ref.package_id, ref.link_index, service, std::move(done));
+        },
         [this](const LinkRef &ref)
         {
             started_.add(ref);
@@ -1603,6 +1693,16 @@ void StoreScreen::update_detail(const InputFrame &input, Feedback &feedback, Int
         feedback.play(hui::audio::Cue::select);
         intent.toast = now ? std::string(tr("Added to favourites"))
                            : std::string(tr("Removed from favourites"));
+    }
+    // B-20: Triangle on a link card marks it bad on this console, or clears the mark.
+    if (input.is_pressed(Action::north) && !header_.on_header && link_flags() != nullptr)
+    {
+        if (const PageRow *row = focused_page_row();
+            row != nullptr && (row->kind == PageRowKind::best || row->kind == PageRowKind::mirror))
+        {
+            choose_flag_item(row->mirror, feedback);
+            return;
+        }
     }
     if (input.is_pressed(Action::menu) && !page_.page.mirrors.empty())
     {
@@ -1773,13 +1873,25 @@ void StoreScreen::update_flow(Feedback &, Intent &intent)
         if (!action.error.empty())
         {
             single_waiting_ = false;
-            pending_ = Pending::notice;
-            confirm_.notice(tr("Could not start the download"), action.error);
+            if (is_torbox_preparing(action.error))
+            {
+                // B-19: TorBox has not finished preparing the file; ask again by itself.
+                torbox_ref_ = single_ref_;
+                torbox_service_ = single_service_;
+                torbox_wait_.start(torbox_clock_);
+            }
+            else
+            {
+                torbox_wait_.cancel();
+                pending_ = Pending::notice;
+                confirm_.notice(tr("Could not start the download"), action.error);
+            }
         }
     }
     if (state.link_serial == seen_link_)
         return;
     seen_link_ = state.link_serial;
+    torbox_wait_.cancel(); // an answer came: the wait is over
     const LinkResult &result = state.link_result;
     if (single_waiting_)
     {
@@ -1847,6 +1959,12 @@ Intent StoreScreen::update(const InputFrame &frame_input, float dt, Feedback &fe
 {
     Intent intent;
     const Snapshot &state = ctx_.store.state();
+    torbox_clock_ += dt;
+    torbox_tick_ = torbox_wait_.tick(torbox_clock_);
+    if (torbox_tick_.kind == TorboxPrepareWait::Tick::Kind::retry_now)
+        retry_torbox();
+    else if (torbox_tick_.kind == TorboxPrepareWait::Tick::Kind::gave_up)
+        open_torbox_notice();
     // The Store shows installed status: ask for the game list while it is open.
     if (state.online())
         ctx_.store.want_installed(true);
@@ -1873,11 +1991,29 @@ Intent StoreScreen::update(const InputFrame &frame_input, float dt, Feedback &fe
     // Circle stops "Download all parts": a wait between attempts ends at once, a
     // capture the part waits for is let go. The press is used up here, so it
     // neither closes the report cancel() may open nor leaves the page.
+    // B-18: the box closes at once; the part in flight is let go and anything it
+    // still queues is cancelled by the Store. Circle on "Asking Pegasus DL..."
+    // likewise goes back at once and the late answer is ignored.
     bool stop_pressed = false;
     if (batch_.active && frame_input.is_pressed(Action::back))
     {
         batch_.cancel();
         ctx_.store.stop_series();
+        ctx_.store.cancel(Store::lane_link);
+        stop_pressed = true;
+    }
+    else if (torbox_wait_.active() && frame_input.is_pressed(Action::back))
+    {
+        torbox_wait_.cancel();
+        if (ctx_.store.link_action().busy)
+            ctx_.store.cancel(Store::lane_link);
+        single_waiting_ = false;
+        stop_pressed = true;
+    }
+    else if (ctx_.store.link_action().busy && frame_input.is_pressed(Action::back))
+    {
+        ctx_.store.cancel(Store::lane_link);
+        single_waiting_ = false; // the link was not started: "Download all" keeps it
         stop_pressed = true;
     }
     const InputFrame &input = stop_pressed ? kIdle : frame_input;
@@ -1886,7 +2022,7 @@ Intent StoreScreen::update(const InputFrame &frame_input, float dt, Feedback &fe
     const bool had_confirm = confirm_.is_open();
     const bool had_list = list_.is_open();
     const bool had_panel = panel_ != Panel::none;
-    const bool busy = ctx_.store.link_action().busy || batch_.active;
+    const bool busy = ctx_.store.link_action().busy || batch_.active || torbox_wait_.active();
 
     const TextPrompt::Result typed = prompt_.update(had_prompt ? input : kIdle, dt, feedback);
     if (typed == TextPrompt::Result::accepted)
@@ -1980,6 +2116,17 @@ Intent StoreScreen::update(const InputFrame &frame_input, float dt, Feedback &fe
                     indexes.push_back(std::atoi(choice_services_[static_cast<std::size_t>(item)].c_str()));
             }
             ctx_.store.debrid_select(selection_id_, indexes, selection_service_);
+        }
+        else if (listed == ListDialog::Result::chosen && was == Pending::bad_reason && chosen >= 0)
+        {
+            mark_mirror(card_mirror_, chosen + 1);
+        }
+        else if (listed == ListDialog::Result::chosen && was == Pending::torbox_preparing)
+        {
+            if (chosen == 0)
+                retry_torbox();
+            else if (chosen == 1)
+                open_torbox_site();
         }
         else if (listed == ListDialog::Result::chosen && was == Pending::parts_menu && parts_mirror_ >= 0 &&
                  parts_mirror_ < static_cast<int>(page_.page.mirrors.size()))
@@ -2793,14 +2940,15 @@ void StoreScreen::draw_mirror(hui::gfx::DrawList &list, int mirror, const ui::Re
     chip(c.version, neutral, soft, ui::Color{0, 0, 0, 0});
     chip(c.kind, neutral, soft, ui::Color{0, 0, 0, 0});
     chip(c.source, ui::Color{0, 0, 0, 0}, faint, ui::Color::rgb(0xffffff, 0.25f + 0.25f * focus));
-    // Line 3: what is wrong with the set.
-    if (!c.warning.empty())
+    // Line 3: what is wrong with the set; a bad-link flag on this console first (B-20).
+    const std::string &line3 = c.flag.empty() ? c.warning : c.flag;
+    if (!line3.empty())
     {
         // On a dark backing so the red reads on the light focused fill too.
-        const float ww = std::min(type.medium.measure(c.warning, 20.0f), r.w - 60.0f);
+        const float ww = std::min(type.medium.measure(line3, 20.0f), r.w - 60.0f);
         list.rounded_rect({r.x + 22.0f, r.y + 92.0f, ww + 16.0f, 26.0f}, 8.0f,
                           ui::Color::rgb(0x000000, 0.35f + 0.3f * focus));
-        ui::text_fit(list, type.medium, c.warning, r.x + 30.0f, r.y + 111.0f, 20.0f, r.w - 60.0f,
+        ui::text_fit(list, type.medium, line3, r.x + 30.0f, r.y + 111.0f, 20.0f, r.w - 60.0f,
                      ui::color::tier_red);
     }
 }
@@ -3115,9 +3263,17 @@ void StoreScreen::draw(Frame &frame, bool focused) const
         text += ")";
         draw_busy(ctx_, overlay, text.c_str());
     }
+    else if (torbox_wait_.active())
+    {
+        const std::string text = torbox_tick_.kind == TorboxPrepareWait::Tick::Kind::waiting
+                                     ? torbox_waiting_text(torbox_tick_.seconds_left)
+                                     : torbox_asking_text();
+        draw_busy(ctx_, overlay, with_stop_hint(text.c_str()).c_str());
+    }
     else if (ctx_.store.link_action().busy)
     {
-        draw_busy(ctx_, overlay, tr("Asking Pegasus DL\xE2\x80\xA6"));
+        const std::string text = std::string(tr("Asking Pegasus DL\xE2\x80\xA6")) + "  (" + tr("Circle: stop") + ")";
+        draw_busy(ctx_, overlay, text.c_str());
     }
     // The const draw path of the panels needs a mutable frame: it is one.
     Context &ctx = ctx_;
@@ -3160,6 +3316,15 @@ std::vector<hui::ui::Hint> StoreScreen::hints() const
         std::vector<hui::ui::Hint> items;
         if (cross != nullptr)
             items.push_back({hui::ui::Button::cross, cross});
+        if (const PageRow *row = focused_page_row();
+            !header_.on_header && link_flags() != nullptr && row != nullptr &&
+            (row->kind == PageRowKind::best || row->kind == PageRowKind::mirror) && row->mirror >= 0 &&
+            row->mirror < static_cast<int>(page_.page.mirrors.size()))
+        {
+            const bool flagged =
+                page_.page.mirrors[static_cast<std::size_t>(row->mirror)].flagged_link(page_.page) >= 0;
+            items.push_back({hui::ui::Button::triangle, flagged ? tr("Clear bad mark") : tr("Mark as bad")});
+        }
         items.push_back({hui::ui::Button::square, tr("Favourite")});
         if (!page_.page.mirrors.empty())
             items.push_back({hui::ui::Button::options, tr("Filters")});

@@ -21,6 +21,7 @@ struct Request
     std::string path;          // "/api/v1/system"
     std::string body;          // JSON for POST
     std::string bearer;        // pairing token, sent as Authorization
+    std::string headers;       // extra header lines, each "Name: value\r\n" (sent as given)
     std::size_t max_bytes = 0; // reply size limit; 0 = kDefaultLimit
     int timeout_ms = 0;        // socket time limit for this request; 0 = the transport's own
 };

@@ -30,6 +30,16 @@ enum class FakeMode
     onboarding, // no sources yet, and Pegasus offers its default list
 };
 
+// The preview's showcase games: catalogue package number, real (free) game title, file slug, title id.
+struct FixtureGame
+{
+    int package;
+    const char *title;
+    const char *slug;
+    const char *title_id;
+};
+const FixtureGame *fixture_games(int *count);
+
 class FakeBackend final : public Backend
 {
   public:
@@ -65,6 +75,14 @@ class FakeBackend final : public Backend
     // placeholder).
     void set_store_art(bool on);
     bool store_art() const;
+    // Preview only: a folder with real (openly licensed) pictures, <slug>-cover.jpg and <slug>-hero.jpg
+    // per game of fixture_games(). A game whose picture files exist takes the game's name and its pictures;
+    // the rest keep the generated art. "" (default): nothing is read.
+    void set_fixture_dir(const std::string &dir);
+    // Preview only (README pictures): the Store catalogue holds only the fixture games that have picture
+    // files; installed games, downloads and a few file names take those games' titles (installed games
+    // their covers too). Set it before the Store starts. Needs set_fixture_dir() first.
+    void set_showcase(bool on);
     // Asks seen for a key since the start (tests).
     int art_asks(const std::string &key) const;
 
@@ -141,6 +159,7 @@ class FakeBackend final : public Backend
                                                       std::string_view password) override;
     Result<std::vector<FileOp>> file_pkg_install(std::string_view path) override;
     Result<bool> file_cancel(std::string_view operation_id) override;
+    Result<bool> open_url(std::string_view url) override;
 
     // ---- test hooks ----
     // Pegasus answers 503 on the APR version list (the user's real console does).
@@ -148,6 +167,7 @@ class FakeBackend final : public Backend
     std::vector<std::string> deleted_games() const;
     std::vector<std::string> deleted_paths() const;
     std::vector<std::string> pkg_installs() const;
+    std::vector<std::string> opened_urls() const;
     std::string last_token(bool torbox) const;
     int settings_writes() const;
     // Starts a test with this download root ("" = Pegasus reports none yet).
@@ -179,6 +199,8 @@ class FakeBackend final : public Backend
     int file_list_calls() const;
 
   private:
+    // Preview fixtures: the game's real title when its pictures are in the fixture folder.
+    void retitle(Package &package, int n) const;
     struct FsNode
     {
         bool dir = false;
@@ -203,6 +225,7 @@ class FakeBackend final : public Backend
     std::vector<std::string> deleted_;
     std::vector<std::string> deleted_paths_;
     std::vector<std::string> installs_;
+    std::vector<std::string> opened_urls_;
     std::string last_rd_token_;
     std::string last_tb_token_;
     std::string last_collision_;
@@ -254,6 +277,8 @@ class FakeBackend final : public Backend
     std::function<void(int)> capture_hook_;
     int started_links_ = 0;
     bool store_art_ = false;
+    std::string fixture_dir_;
+    bool showcase_ = false;
     std::map<std::string, int> art_asks_;
 };
 

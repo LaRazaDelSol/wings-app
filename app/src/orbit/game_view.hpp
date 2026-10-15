@@ -197,6 +197,10 @@ void load_game_view(GameView *view, std::vector<PackageDetail> details,
                     const std::vector<std::string> &source_order, const LinkPrefs &prefs);
 // The preferences changed: ranked again, the filter kept (where it still applies).
 void rerank_game_view(GameView *view, const std::vector<std::string> &source_order, const LinkPrefs &prefs);
+// The title id bad-link flags of this game are keyed by ("" when none is known).
+std::string flag_title_id(const GameView &view);
+// The bad-link flag id of one link of the page ("" when the page has no such link).
+std::string ref_flag_id(const GameView &view, const LinkRef &ref);
 // Another filter: rows again.
 void set_game_filter(GameView *view, const MirrorFilter &filter, const LinkPrefs &prefs);
 
@@ -220,6 +224,8 @@ struct MirrorCard
     std::string kind; // "Game + DLC", "Update", ...
     std::string parts;   // "1 file", "22 parts (1-22)"
     std::string warning; // "part 4 missing", ...
+    std::string flag;    // "Failed for you on 14 Oct: file removed" (shown before the warning)
+    bool flagged = false;
     std::string name;    // the first link's name as the catalogue has it
     LinkTier tier = LinkTier::unknown;
     bool needs_browser = false;

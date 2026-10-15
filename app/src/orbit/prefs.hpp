@@ -52,6 +52,12 @@ struct WingsLocalPrefs
     bool notes_enabled = true;
     bool carousel_enabled = true;
     bool folder_confirmed = false;
+    // Retry a download by itself when the connection drops (download_auto_retry.hpp). On by default; files
+    // from before this choice have no key and load the default.
+    bool auto_reconnect = true;
+    // Keep the .pkg file after Wings installed it (pkg_install.hpp). Off by default: a .pkg that
+    // installed is deleted. A failed install always keeps the file.
+    bool keep_pkg_files = false;
 
     bool operator==(const WingsLocalPrefs &other) const;
 };

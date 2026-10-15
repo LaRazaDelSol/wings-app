@@ -20,6 +20,7 @@
 #include <signal.h>
 #include <sys/stat.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cstdio>
 #include <cstdlib>
@@ -822,6 +823,55 @@ void test_tls_client()
     CHECK(c.get(url(srv, "/big"), small).error == tls::Error::too_large);
     CHECK(c.get(url(srv, "/big-chunked"), small).error == tls::Error::too_large);
     CHECK(c.get(url(srv, "/big-noclen"), small).error == tls::Error::too_large);
+    // streaming sink: the body goes to the callback in order, Response::body stays empty
+    {
+        struct Collect
+        {
+            std::vector<std::uint8_t> got;
+            std::size_t max_piece = 0;
+            std::size_t refuse_after = 0; // 0: never
+        } col;
+        auto sink = [](void *ctx, const std::uint8_t *d, std::size_t n) -> bool
+        {
+            auto *c = static_cast<Collect *>(ctx);
+            c->max_piece = std::max(c->max_piece, n);
+            c->got.insert(c->got.end(), d, d + n);
+            return c->refuse_after == 0 || c->got.size() < c->refuse_after;
+        };
+        tls::GetOptions so;
+        so.sink = sink;
+        so.sink_ctx = &col;
+        const auto want = c.get(url(srv, "/big")); // reference copy through the buffered path
+        CHECK(want.ok() && want.body.size() > 100000);
+        for (const char *path : {"/big", "/big-chunked", "/big-noclen"})
+        {
+            col = Collect();
+            r = c.get(url(srv, path), so);
+            CHECK_MSG(r.ok(), std::string(path) + " " + r.detail);
+            CHECK(r.body.empty() && col.got == want.body && col.max_piece > 0 && col.max_piece <= 16384);
+        }
+        // the cap still applies while streaming (nothing past it reaches the sink)
+        col = Collect();
+        so.max_body = 20000;
+        r = c.get(url(srv, "/big"), so);
+        CHECK(r.error == tls::Error::too_large && col.got.empty());
+        so.max_body = 0;
+        // a refusing sink aborts the transfer with Error::sink
+        col = Collect();
+        col.refuse_after = 30000;
+        r = c.get(url(srv, "/big-chunked"), so);
+        CHECK(r.error == tls::Error::sink && col.got.size() < want.body.size());
+        col = Collect();
+        col.refuse_after = 30000;
+        r = c.get(url(srv, "/big-noclen"), so);
+        CHECK(r.error == tls::Error::sink);
+        // error statuses never reach the sink
+        col = Collect();
+        r = c.get(url(srv, "/404"), so);
+        CHECK(r.error == tls::Error::http_status && col.got.empty());
+        // and the client is still usable afterwards
+        CHECK(c.get(url(srv, "/ok")).ok());
+    }
     // Content-Length 100 on a 100 kB body: the declared length wins, the rest is never read and
     // the connection is not reused.
     r = c.get(url(srv, "/big-liar"), small);

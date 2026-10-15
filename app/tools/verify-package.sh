@@ -72,6 +72,30 @@ import re as _re
 _routes = set(_re.findall(rb'/api/v1/[A-Za-z0-9_/-]*', eboot))
 _allowed = {b'/api/v1/version', b'/api/v1/scan', b'/api/v1/games'}
 assert _routes <= _allowed, f'eboot.bin mentions unexpected API routes {sorted(_routes - _allowed)!r}'
+# The Wings update helper (app/helper, built by `make helper`): a separate payload ELF the app sends
+# to the payload loader. It ports parts of Orbit's backend (credited in THIRD-PARTY-NOTICES.md), so
+# it gets the same Orbit checks as eboot.bin, and it may only serve its own /wings-helper/v1/ routes.
+helper_path = extracted / 'assets/helper/wings-helper.elf'
+assert helper_path.is_file(), 'assets/helper/wings-helper.elf is missing: the in-app updater has no helper'
+helper = helper_path.read_bytes()
+assert helper[:4] == b'\x7fELF', 'wings-helper.elf is not an ELF file'
+assert helper[4] == 2 and struct.unpack('<H', helper[18:20])[0] == 0x3E, 'wings-helper.elf is not an x86-64 ELF64'
+assert len(helper) >= 64 * 1024, f'wings-helper.elf is only {len(helper)} bytes'
+for needle in (b'34177', b'orbit_store', b'Orbit-Store', b'OrbitStoreTV'):
+    assert needle not in helper, f'wings-helper.elf still mentions {needle!r}'
+assert b'/api/v1/' not in helper, 'wings-helper.elf serves /api/v1/ routes (Orbit backend or ShadowMountPlus)'
+# The helper keeps the prefix and the route names apart (prefix + "status"), so the bare prefix is allowed too.
+_helper_allowed = {b'/wings-helper/v1/' + r for r in (b'', b'status', b'install', b'cancel', b'stop', b'tidy')}
+_helper_routes = set(_re.findall(rb'/wings-helper/v1/[A-Za-z0-9_/-]*', helper))
+assert _helper_routes and (b'/wings-helper/v1/status' in _helper_routes or b'status\x00' in helper), \
+    'wings-helper.elf does not serve /wings-helper/v1/status'
+assert _helper_routes <= _helper_allowed, \
+    f'wings-helper.elf mentions unexpected routes {sorted(_helper_routes - _helper_allowed)!r}'
+assert b'Wings-Helper/' in helper, 'wings-helper.elf does not identify itself as Wings-Helper/<version>'
+_eboot_helper_routes = set(_re.findall(rb'/wings-helper/v1/[A-Za-z0-9_/-]*', eboot))
+assert _eboot_helper_routes <= _helper_allowed, \
+    f'eboot.bin mentions unexpected helper routes {sorted(_eboot_helper_routes - _helper_allowed)!r}'
+assert b'wings-helper.elf' in eboot, 'eboot.bin does not reference the update helper'
 # Cover art (wings/art): the shipped CA bundle, and the same imports as before.
 # DT_NEEDED must not gain libScePosixForWebKit (getaddrinfo is shimmed away, a
 # native title does not load that module) nor libSceNet (system DNS is an
@@ -90,7 +114,8 @@ record = {'titleId': title_id, 'contentId': param['contentId'],
           'contentVersion': param['contentVersion'],
           'build': _stamp.group(1), 'channel': _stamp.group(2).strip(),
           'imageSha256': digest(dist / f'{title_id}.ffpkg'),
-          'appSha256': digest(extracted / 'eboot.bin'), 'files': len(folder),
+          'appSha256': digest(extracted / 'eboot.bin'), 'helperSha256': digest(helper_path),
+          'files': len(folder),
           'caBundleCertificates': certificates}
 Path('build/package-verification.json').write_text(json.dumps(record, indent=2) + '\n')
 print(json.dumps(record, indent=2))

@@ -91,6 +91,13 @@ class PegasusLoadFlow
     LoadCommand choose(LoadChoice choice, const LoadFacts &facts);
     // Settings changed the mode.
     void set_mode(PegasusStartMode mode);
+    // Circle while loading (B-18): back to the choices at once. LoadCommand::cancel
+    // when a job runs (the runner stops it and ignores its result).
+    LoadCommand cancel_by_player();
+    bool cancellable() const
+    {
+        return busy() || state_ == LoadState::loader_wait || state_ == LoadState::waiting_for_pegasus;
+    }
 
     // What the runner saw.
     void on_downloading();

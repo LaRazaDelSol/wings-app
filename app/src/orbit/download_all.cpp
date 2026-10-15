@@ -119,8 +119,10 @@ void DownloadAll::cancel()
     if (!active)
         return;
     cancel_ = true;
-    if (!in_flight_)
-        finish(End::cancelled); // nothing is out: a wait ends at once
+    // Ends at once (B-18): a part still out is let go, its late answer is ignored
+    // (on_result sees the series ended) and the Store cancels what it queued.
+    in_flight_ = false;
+    finish(End::cancelled);
 }
 
 const std::string &DownloadAll::host_of(std::size_t ref) const

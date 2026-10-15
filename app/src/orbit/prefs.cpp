@@ -55,7 +55,8 @@ bool WingsLocalPrefs::operator==(const WingsLocalPrefs &other) const
            after_download == other.after_download && update_check == other.update_check &&
            icon_source == other.icon_source && hero_source == other.hero_source &&
            notes_enabled == other.notes_enabled && carousel_enabled == other.carousel_enabled &&
-           folder_confirmed == other.folder_confirmed;
+           folder_confirmed == other.folder_confirmed && auto_reconnect == other.auto_reconnect &&
+           keep_pkg_files == other.keep_pkg_files;
 }
 
 bool valid_firmware(std::string_view value)
@@ -91,6 +92,8 @@ std::string encode_local_prefs(const WingsLocalPrefs &prefs)
     out += std::string("notes=") + (prefs.notes_enabled ? "1" : "0") + "\n";
     out += std::string("carousel=") + (prefs.carousel_enabled ? "1" : "0") + "\n";
     out += std::string("folder_confirmed=") + (prefs.folder_confirmed ? "1" : "0") + "\n";
+    out += std::string("auto_reconnect=") + (prefs.auto_reconnect ? "1" : "0") + "\n";
+    out += std::string("keep_pkg_files=") + (prefs.keep_pkg_files ? "1" : "0") + "\n";
     return out;
 }
 
@@ -138,6 +141,10 @@ bool decode_local_prefs(std::string_view payload, WingsLocalPrefs *out)
             parse_after_download(value, &prefs.after_download);
         else if (key == "update_check")
             prefs.update_check = value != "0";
+        else if (key == "auto_reconnect")
+            prefs.auto_reconnect = value != "0";
+        else if (key == "keep_pkg_files")
+            prefs.keep_pkg_files = value == "1";
         else if (key == "icon_source")
             parse_icon_source(value, &prefs.icon_source);
         else if (key == "hero_source")

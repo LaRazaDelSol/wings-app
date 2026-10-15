@@ -50,6 +50,7 @@ const char *name(Error e)
     case Error::bad_type: return "bad_type";
     case Error::protocol: return "protocol";
     case Error::cancelled: return "cancelled";
+    case Error::sink: return "sink";
     }
     return "?";
 }
@@ -686,6 +687,29 @@ struct Client::Impl
         return Error::none;
     }
 
+    // Where body bytes go: a vector, or (streaming) the caller's sink. `total` counts bytes either way.
+    struct BodyOut
+    {
+        std::vector<std::uint8_t> *vec = nullptr;
+        bool (*sink)(void *, const std::uint8_t *, std::size_t) = nullptr;
+        void *sink_ctx = nullptr;
+        std::uint64_t total = 0;
+        bool sink_failed = false;
+        bool push(const std::uint8_t *p, std::size_t k)
+        {
+            if (sink)
+            {
+                if (!sink(sink_ctx, p, k))
+                    return sink_failed = true, false;
+                total += k;
+                return true;
+            }
+            vec->insert(vec->end(), p, p + k);
+            total = vec->size();
+            return true;
+        }
+    };
+
     // ---- HTTP over an open connection
     struct Reader
     {
@@ -725,8 +749,8 @@ struct Client::Impl
                     return false;
             }
         }
-        // Moves n bytes into dst (null: discard). false on EOF, error or over limit.
-        bool take(std::size_t n, std::vector<std::uint8_t> *dst, std::size_t limit)
+        // Moves n bytes into dst (null: discard). false on EOF, error, sink refusal or over limit.
+        bool take(std::size_t n, BodyOut *dst, std::size_t limit)
         {
             while (n)
             {
@@ -735,15 +759,16 @@ struct Client::Impl
                 const std::size_t k = std::min(n, avail());
                 if (dst)
                 {
-                    if (dst->size() + k > limit)
+                    if (dst->total + k > limit)
                         return false;
                     const auto *p = reinterpret_cast<const std::uint8_t *>(buf.data() + pos);
-                    dst->insert(dst->end(), p, p + k);
+                    if (!dst->push(p, k))
+                        return false;
                 }
                 pos += k;
                 n -= k;
                 if (dst && im->opt && im->opt->progress)
-                    im->opt->progress(im->opt->hook_ctx, dst->size());
+                    im->opt->progress(im->opt->hook_ctx, dst->total);
             }
             return true;
         }
@@ -813,10 +838,15 @@ struct Client::Impl
     }
 
     // Reads the body (cap enforced). *keep reports whether the connection stays usable.
-    Error read_body(Reader *rd, const Head &head, std::vector<std::uint8_t> *body,
+    Error read_body(Reader *rd, const Head &head, BodyOut *body,
                     std::size_t cap, bool *keep, std::string *why)
     {
-        auto fail_io = [&]() { return stop == Error::none ? Error::io : stop; };
+        auto fail_io = [&]()
+        {
+            if (body->sink_failed)
+                return Error::sink;
+            return stop == Error::none ? Error::io : stop;
+        };
         if (lower(head.get("connection")).find("close") != std::string::npos)
             *keep = false;
         const std::string enc = lower(head.get("content-encoding"));
@@ -847,7 +877,7 @@ struct Client::Impl
                     } while (!trailer.empty());
                     return Error::none;
                 }
-                if (n > cap || body->size() + n > cap)
+                if (n > cap || body->total + n > cap)
                     return *why = "body exceeds cap", Error::too_large;
                 if (!rd->take(static_cast<std::size_t>(n), body, cap))
                     return *why = "truncated chunk", fail_io();
@@ -881,7 +911,8 @@ struct Client::Impl
             }
             if (n > cap)
                 return *why = "content-length " + cl + " exceeds cap", Error::too_large;
-            body->reserve(static_cast<std::size_t>(n));
+            if (body->vec)
+                body->vec->reserve(static_cast<std::size_t>(n));
             if (!rd->take(static_cast<std::size_t>(n), body, cap))
                 return *why = "truncated body", fail_io();
             return Error::none;
@@ -890,9 +921,16 @@ struct Client::Impl
         *keep = false;
         for (;;)
         {
-            if (body->size() + rd->avail() > cap)
+            if (body->total + rd->avail() > cap)
                 return *why = "body exceeds cap", Error::too_large;
-            body->insert(body->end(), rd->buf.begin() + static_cast<long>(rd->pos), rd->buf.end());
+            if (rd->avail() > 0)
+            {
+                const auto *p = reinterpret_cast<const std::uint8_t *>(rd->buf.data() + rd->pos);
+                if (!body->push(p, rd->avail()))
+                    return *why = "sink refused the data", Error::sink;
+                if (opt && opt->progress)
+                    opt->progress(opt->hook_ctx, body->total);
+            }
             rd->pos = rd->buf.size();
             if (!rd->fill())
             {
@@ -972,8 +1010,10 @@ struct Client::Impl
                                   head.status == 307 || head.status == 308;
             if (redirect)
             {
-                std::vector<std::uint8_t> sink;
-                const bool drained = read_body(&rd, head, &sink, 64 << 10, &keep, &why) == Error::none;
+                std::vector<std::uint8_t> small;
+                BodyOut small_out;
+                small_out.vec = &small;
+                const bool drained = read_body(&rd, head, &small_out, 64 << 10, &keep, &why) == Error::none;
                 if (drained && keep && rd.avail() == 0)
                     park(c);
                 else
@@ -1018,7 +1058,15 @@ struct Client::Impl
                 return fail(r, Error::bad_type, "content-type '" + r.content_type + "'");
             }
 
-            e = read_body(&rd, head, &r.body, cap, &keep, &why);
+            BodyOut out;
+            out.vec = &r.body;
+            if (o.sink)
+            {
+                out.vec = nullptr;
+                out.sink = o.sink;
+                out.sink_ctx = o.sink_ctx;
+            }
+            e = read_body(&rd, head, &out, cap, &keep, &why);
             if (e != Error::none)
             {
                 destroy(c);

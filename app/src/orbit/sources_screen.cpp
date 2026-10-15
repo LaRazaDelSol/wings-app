@@ -6,6 +6,7 @@
 
 #include "orbit/screens.hpp"
 
+#include "orbit/busy_cancel.hpp"
 #include "orbit/model.hpp"
 
 #include <algorithm>
@@ -128,6 +129,12 @@ Intent SourcesScreen::update(const InputFrame &input, float dt, Feedback &feedba
     const int count = static_cast<int>(state.sources.size());
     index_ = std::clamp(index_, 0, std::max(0, count - 1));
 
+    // Circle on "Asking Pegasus DL...": back at once, the late answer is ignored (B-18).
+    if (ctx_.store.source_action().busy && input.is_pressed(Action::back))
+    {
+        ctx_.store.cancel(Store::lane_sources);
+        return intent;
+    }
     const bool had_prompt = prompt_.is_open();
     const bool had_confirm = confirm_.is_open();
     const bool had_list = list_.is_open();
@@ -335,7 +342,7 @@ void SourcesScreen::draw(Frame &frame, bool focused) const
         list.pop_clip();
     }
     if (ctx_.store.source_action().busy)
-        draw_busy(ctx_, frame.overlay, tr("Asking Pegasus DL\xE2\x80\xA6"));
+        draw_busy(ctx_, frame.overlay, with_stop_hint(tr("Asking Pegasus DL\xE2\x80\xA6")).c_str());
     prompt_.draw(ctx_, frame);
     confirm_.draw(ctx_, frame);
     list_.draw(ctx_, frame);

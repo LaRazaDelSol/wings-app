@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
 // The order of docs/research/links-grouping.md section 4.5, lowest key first:
+//   0. flagged bad on this console (link_flags.hpp: never Best while an
+//      unflagged link exists, so flagged links sort last),
 //   1. too new for my firmware (never Best while anything else exists),
 //   2. tier: native .pkg, debrid, automated, browser capture, unknown, unsupported
 //      ("prefer debrid" off: debrid between automated and browser),
@@ -68,6 +70,7 @@ struct Candidate
     int source_order = 0;
     int index = 0; // link index (first part)
     std::string host;
+    bool flagged = false; // a link of it is flagged bad on this console (GameLink::flag_reason)
 };
 
 struct Ranking
@@ -77,6 +80,7 @@ struct Ranking
     std::vector<std::string> chips; // "Debrid", "USA", "BP 4.xx", "exFAT", "1 file"
     std::string why;        // "debrid: fast, no captcha, runs on your 10.xx, your region, single file"
     int too_new = 0;        // candidates that need a newer firmware than the console's
+    int flagged = 0;        // candidates flagged bad on this console
     // "Debrid · USA · 12.xx · exFAT · 1 file" (separator as given).
     std::string summary(const char *separator = " \xC2\xB7 ") const;
     // "Best: Debrid · USA · 12.xx · 1 file — debrid: fast, no captcha, ..."

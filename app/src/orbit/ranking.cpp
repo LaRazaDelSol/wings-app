@@ -20,7 +20,7 @@ namespace
 
 struct Key
 {
-    std::array<int, 8> head{}; // too new, tier, fit, region, format, parts class, parts, size unknown
+    std::array<int, 9> head{}; // flagged, too new, tier, fit, region, format, parts class, parts, size unknown
     int version_unknown = 0;
     std::vector<int> version; // compared descending
     int source_order = 0;
@@ -69,15 +69,16 @@ Key key_of(const Candidate &c, const LinkPrefs &p)
 {
     Key k;
     const FwFit fit = fw_fit(c.fw, p.firmware);
-    k.head[0] = fit == FwFit::too_new ? 1 : 0;
-    k.head[1] = tier_key(c.tier, p.prefer_debrid);
-    k.head[2] = static_cast<int>(fit);
-    k.head[3] = p.region.empty() || c.region == p.region ? 0 : (c.region.empty() ? 1 : 2);
-    k.head[4] = p.format == LinkFormat::none || c.format == p.format ? 0 : 1;
+    k.head[0] = c.flagged ? 1 : 0;
+    k.head[1] = fit == FwFit::too_new ? 1 : 0;
+    k.head[2] = tier_key(c.tier, p.prefer_debrid);
+    k.head[3] = static_cast<int>(fit);
+    k.head[4] = p.region.empty() || c.region == p.region ? 0 : (c.region.empty() ? 1 : 2);
+    k.head[5] = p.format == LinkFormat::none || c.format == p.format ? 0 : 1;
     const int cls = status_class(c.status);
-    k.head[5] = p.prefer_single_file ? cls : (cls >= 2 ? 1 : 0);
-    k.head[6] = p.prefer_single_file ? c.parts : 0;
-    k.head[7] = c.size_known ? 0 : 1;
+    k.head[6] = p.prefer_single_file ? cls : (cls >= 2 ? 1 : 0);
+    k.head[7] = p.prefer_single_file ? c.parts : 0;
+    k.head[8] = c.size_known ? 0 : 1;
     k.version = version_parts(c.version);
     k.version_unknown = k.version.empty() ? 1 : 0;
     k.source_order = c.source_order;
@@ -191,6 +192,8 @@ Ranking rank_links(const std::vector<Candidate> &candidates, const LinkPrefs &pr
         r.order.push_back(static_cast<int>(i));
         if (fw_fit(candidates[i].fw, prefs.firmware) == FwFit::too_new)
             ++r.too_new;
+        if (candidates[i].flagged)
+            ++r.flagged;
     }
     std::stable_sort(r.order.begin(), r.order.end(),
                      [&](int a, int b) { return keys[static_cast<std::size_t>(a)] < keys[static_cast<std::size_t>(b)]; });
@@ -208,6 +211,8 @@ Ranking rank_links(const std::vector<Candidate> &candidates, const LinkPrefs &pr
     r.chips.push_back(b.parts == 0 ? std::string(tr("1 file")) : trn(b.parts, "{count} part", "{count} parts"));
     std::vector<std::string> why;
     why.emplace_back(tier_why(b.tier));
+    if (b.flagged)
+        why.emplace_back(tr("failed for you before (no other link)"));
     if (!prefs.firmware.empty())
     {
         switch (fw_fit(b.fw, prefs.firmware))
@@ -268,6 +273,7 @@ Candidate candidate_of(const GamePage &page, int mirror)
     c.source_order = pkg.source_order;
     c.index = first.index;
     c.host = m.host;
+    c.flagged = m.flagged_link(page) >= 0;
     return c;
 }
 

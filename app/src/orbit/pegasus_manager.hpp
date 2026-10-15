@@ -212,7 +212,10 @@ class PegasusManager
     bool download_latest();     // the player confirmed; only a downloadable `latest`
     // pegasus_online: Pegasus DL answers on 6970 right now; then the send is refused.
     bool send_to_loader(bool pegasus_online);
-    void cancel();              // stops a download between reads
+    // Circle (B-18): any job (check, download, verify, send) ends now: the phase is
+    // idle at once and the job's late result changes nothing. A download also stops
+    // between reads. A new job waits until the abandoned one has returned.
+    void cancel();
     // First-run flow (pegasus_offer.cpp): any listed release, and a send that first re-checks the file
     // on disk against the published SHA-256. Both refuse when a job runs; the send refuses while
     // Pegasus answers.
@@ -247,6 +250,7 @@ class PegasusManager
     PegasusStatus status_;
     std::vector<PegasusRelease> releases_;
     bool cancel_ = false;
+    bool running_ = false; // under mutex_: a job thread has not returned yet
     bool online_now_ = false;     // the last note_pegasus_online()
     std::int64_t attempt_at_ = 0; // the last background check, so a failure is not retried every frame
     Thread thread_;

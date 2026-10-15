@@ -7,10 +7,15 @@
 
 #include "orbit/store.hpp"
 
+#include "orbit/download_auto_retry.hpp"
 #include "orbit/i18n.hpp"
+#include "orbit/install_hint.hpp"
+#include "orbit/link_flags.hpp"
 #include "orbit/link_retry.hpp"
 
 #include <algorithm>
+#include <ctime>
+#include <iterator>
 #include <memory>
 #include <utility>
 
@@ -223,14 +228,102 @@ void Store::post_jobs(std::vector<Job> jobs)
     }
     if (seen_completed_.size() > 512)
         seen_completed_.clear();
+    known_jobs_.clear();
+    for (const Job &job : jobs)
+        known_jobs_.insert(job.id);
+    known_jobs_valid_ = true;
     active_jobs_.store(active);
     inbox_.post(
         [this, jobs = std::move(jobs)]() mutable
         {
+            note_flag_jobs(jobs);
             state_.jobs = std::move(jobs);
             state_.have_queue = true;
             ++state_.serial;
         });
+}
+
+// ---- bad-link flags (B-20) ----
+
+namespace
+{
+// A start's jobs show up within this long (a browser capture can take a while).
+constexpr double kFlagWindowSeconds = 600.0;
+} // namespace
+
+std::string Store::job_flag_id(const std::string &job_id) const
+{
+    const auto it = job_flag_ids_.find(job_id);
+    return it == job_flag_ids_.end() ? std::string() : it->second;
+}
+
+void Store::take_flag_id()
+{
+    pending_flag_id_ = std::move(next_flag_id_);
+    pending_flag_title_ = std::move(next_flag_title_);
+    next_flag_id_.clear();
+    next_flag_title_.clear();
+    pending_flag_at_ = now_seconds();
+}
+
+void Store::note_flag_jobs(const std::vector<Job> &jobs)
+{
+    // Jobs that were not in the last queue belong to the last flagged start, while it is recent.
+    if (state_.have_queue && !pending_flag_id_.empty() && now_seconds() - pending_flag_at_ <= kFlagWindowSeconds)
+    {
+        std::set<std::string> old;
+        for (const Job &job : state_.jobs)
+            old.insert(job.id);
+        for (const Job &job : jobs)
+            if (old.count(job.id) == 0 && job_flag_ids_.count(job.id) == 0)
+            {
+                job_flag_ids_[job.id] = pending_flag_id_;
+                job_flag_titles_[job.id] = pending_flag_title_;
+            }
+    }
+    std::set<std::string> listed;
+    for (const Job &job : jobs)
+    {
+        listed.insert(job.id);
+        if (job.status != "failed")
+        {
+            flagged_jobs_.erase(job.id); // a retry that fails again is flagged again
+            continue;
+        }
+        if (job_flag_ids_.count(job.id) == 0 || flagged_jobs_.count(job.id) != 0)
+            continue;
+        // Still being reconnected: not final (the backend already shows these as "retrying").
+        const DownloadAutoRetry::View::Kind kind = download_reconnect().view(job.id).kind;
+        if (kind == DownloadAutoRetry::View::Kind::waiting || kind == DownloadAutoRetry::View::Kind::reconnecting)
+            continue;
+        // Pegasus' catalogue miss is not the link's fault.
+        if (job.error.find("Download link not found") != std::string::npos)
+            continue;
+        FlagReason reason = reason_from_error(job.error, download_error_http_code(job.error));
+        if (reason == FlagReason::none && looks_like_install_failure(job.error))
+            reason = FlagReason::wrong_file;
+        if (reason == FlagReason::none)
+            continue;
+        flagged_jobs_.insert(job.id);
+        flag_job(job.id, static_cast<int>(reason));
+    }
+    // Forget jobs Pegasus no longer lists (cleared).
+    for (auto it = job_flag_ids_.begin(); it != job_flag_ids_.end();)
+        it = listed.count(it->first) == 0 ? job_flag_ids_.erase(it) : std::next(it);
+    for (auto it = job_flag_titles_.begin(); it != job_flag_titles_.end();)
+        it = listed.count(it->first) == 0 ? job_flag_titles_.erase(it) : std::next(it);
+}
+
+void Store::flag_job(const std::string &job_id, int reason)
+{
+    LinkFlags *flags = link_flags();
+    const auto it = job_flag_ids_.find(job_id);
+    if (flags == nullptr || it == job_flag_ids_.end())
+        return;
+    const auto title = job_flag_titles_.find(job_id);
+    flags->add(it->second, static_cast<FlagReason>(reason), static_cast<std::int64_t>(std::time(nullptr)),
+               title == job_flag_titles_.end() ? std::string() : title->second);
+    save_link_flags();
 }
 
 void Store::post_sources(std::vector<Source> sources)
@@ -606,7 +699,7 @@ void Store::catalog_worker()
 
 // ---- commands ----
 
-void Store::submit(int channel, std::function<Outcome()> work)
+void Store::submit(int channel, std::function<Outcome()> work, int guard)
 {
     if (channel >= 0)
     {
@@ -616,11 +709,132 @@ void Store::submit(int channel, std::function<Outcome()> work)
         c.state.error.clear();
         c.state.message.clear();
     }
+    if (guard == kSameLane)
+        guard = channel;
+    Command command;
+    command.channel = channel;
+    command.work = std::move(work);
+    command.guard = guard >= 0 && guard < kLanes ? guard : -1;
+    command.gen = command.guard >= 0 ? gen_[command.guard].load() : 0;
     {
         Lock lock(mutex_);
-        commands_.push_back({channel, std::move(work)});
+        commands_.push_back(std::move(command));
     }
     signal_.notify();
+}
+
+void Store::cancel(int lane)
+{
+    if (lane < 0 || lane >= kLanes)
+        return;
+    gen_[lane].fetch_add(1);
+    // The screen goes back now: no busy state, no stale error or confirmation.
+    // The serial is left alone, so no screen takes this for a finished action.
+    Channel &c = channel_[lane];
+    c.pending = 0;
+    c.state.busy = false;
+    c.state.error.clear();
+    c.state.message.clear();
+    ++state_.serial;
+    std::size_t dropped = 0;
+    {
+        Lock lock(mutex_);
+        const std::size_t before = commands_.size();
+        commands_.erase(std::remove_if(commands_.begin(), commands_.end(),
+                                       [lane](const Command &command) { return command.guard == lane; }),
+                        commands_.end());
+        dropped = before - commands_.size();
+    }
+    signal_.notify(); // a series wait for a capture ends at once
+    if (this->log)
+        this->log("[WINGS-CANCEL] lane=" + std::to_string(lane) + " dropped=" + std::to_string(dropped));
+}
+
+bool Store::abandoned() const
+{
+    return running_guard_ >= 0 && gen_[running_guard_].load() != running_gen_;
+}
+
+void Store::post_current(std::function<void()> apply)
+{
+    const int guard = running_guard_;
+    const std::uint64_t gen = running_gen_;
+    inbox_.post(
+        [this, guard, gen, apply = std::move(apply)]
+        {
+            if (guard >= 0 && gen_[guard].load() != gen)
+                return; // cancelled meanwhile: the answer changes nothing
+            apply();
+        });
+}
+
+void Store::note_cancel(const std::string &what)
+{
+    if (this->log)
+        this->log("[WINGS-CANCEL] " + what);
+}
+
+std::set<std::string> Store::jobs_before()
+{
+    if (!known_jobs_valid_)
+    {
+        Result<std::vector<Job>> queue = backend_.queue();
+        if (queue.ok())
+            post_jobs(std::move(queue.value));
+    }
+    return known_jobs_;
+}
+
+void Store::undo_queued(const std::set<std::string> &before, const std::vector<Job> *after,
+                        const std::string &session)
+{
+    if (!session.empty())
+    {
+        backend_.capture_cancel(session);
+        {
+            Lock lock(mutex_);
+            if (capture_session_ == session)
+                capture_session_.clear();
+        }
+        note_cancel("late capture stopped session=" + session);
+        // A read posted before the cancel may still show it: the capture box closes.
+        inbox_.post(
+            [this, session]
+            {
+                if (state_.capture.session_id != session)
+                    return;
+                state_.capture = {};
+                ++state_.capture_serial;
+                ++state_.serial;
+            });
+    }
+    std::vector<Job> jobs;
+    if (after != nullptr)
+    {
+        jobs = *after;
+    }
+    else
+    {
+        Result<std::vector<Job>> queue = backend_.queue();
+        if (!queue.ok())
+            return;
+        jobs = std::move(queue.value);
+    }
+    std::vector<std::string> added;
+    for (const Job &job : jobs)
+    {
+        if (before.count(job.id) == 0 && job.status != "completed" && job.status != "cancelled" &&
+            job.status != "failed")
+            added.push_back(job.id);
+    }
+    for (const std::string &id : added)
+    {
+        Result<std::vector<Job>> result = backend_.job_action(id, "cancel");
+        note_cancel("late download cancelled job=" + id + (result.ok() ? "" : " error=" + result.error));
+        if (result.ok())
+            jobs = std::move(result.value);
+    }
+    post_jobs(std::move(jobs));
 }
 
 Store::Outcome Store::jobs_outcome(Result<std::vector<Job>> &&result)
@@ -643,9 +857,25 @@ Store::Outcome Store::sources_outcome(Result<std::vector<Source>> &&result)
     return out;
 }
 
-Store::Outcome Store::link_outcome(Result<LinkResult> &&result)
+Store::Outcome Store::link_outcome(Result<LinkResult> &&result, const std::set<std::string> &before)
 {
+    if (on_answer)
+        on_answer();
     Outcome out;
+    if (abandoned())
+    {
+        // Circle came first: nothing of this answer is shown, and what it started is undone.
+        note_cancel("late link answer dropped");
+        if (result.ok())
+        {
+            const LinkResult &value = result.value;
+            if (value.kind == LinkResult::Kind::capture)
+                undo_queued(before, nullptr, value.capture.terminal() ? std::string() : value.capture.session_id);
+            else if (value.kind == LinkResult::Kind::dispatched && (value.dispatch.queued || value.dispatch.has_jobs))
+                undo_queued(before, value.dispatch.has_jobs ? &value.dispatch.jobs : nullptr, std::string());
+        }
+        return out;
+    }
     out.error = result.error;
     out.unreachable = result.unreachable();
     if (!result.ok())
@@ -673,7 +903,7 @@ Store::Outcome Store::link_outcome(Result<LinkResult> &&result)
     {
         out.message = value.message;
     }
-    inbox_.post(
+    post_current(
         [this, value = std::move(value)]() mutable
         {
             state_.link_result = std::move(value);
@@ -685,6 +915,11 @@ Store::Outcome Store::link_outcome(Result<LinkResult> &&result)
 
 void Store::job_action(const std::string &job_id, const std::string &action)
 {
+    // The player gave up on an archive no password opened: the link is flagged (B-20).
+    if (action == "cancel")
+        for (const Job &job : state_.jobs)
+            if (job.id == job_id && job.status == "waitingPassword")
+                flag_job(job_id, static_cast<int>(FlagReason::password));
     submit(chan_jobs,
            [this, job_id, action] { return jobs_outcome(backend_.job_action(job_id, action)); });
 }
@@ -728,14 +963,19 @@ void Store::open_package(const std::string &package_id)
 
 void Store::start_link(const std::string &package_id, int link_index, const std::string &service)
 {
+    take_flag_id();
     submit(chan_link,
            [this, package_id, link_index, service]
-           { return link_outcome(backend_.start_link(package_id, link_index, service)); });
+           {
+               const std::set<std::string> before = jobs_before();
+               return link_outcome(backend_.start_link(package_id, link_index, service), before);
+           });
 }
 
 void Store::start_link(const std::string &package_id, int link_index, const std::string &service,
                        std::function<void(const LinkStart &)> done)
 {
+    take_flag_id();
     {
         Lock lock(mutex_);
         series_stop_ = false;
@@ -745,6 +985,7 @@ void Store::start_link(const std::string &package_id, int link_index, const std:
            [this, package_id, link_index, service, outcome]
            {
                const double begun = now_seconds();
+               const std::set<std::string> before = jobs_before();
                Result<LinkResult> result = backend_.start_link(package_id, link_index, service);
                outcome->error = result.error;
                outcome->kind = result.value.kind;
@@ -753,22 +994,32 @@ void Store::start_link(const std::string &package_id, int link_index, const std:
                    !result.ok() && transient_link_error(result.status, result.error, result.unreachable());
                const bool capture = result.ok() && result.value.kind == LinkResult::Kind::capture;
                const CaptureView started = capture ? result.value.capture : CaptureView{};
-               Outcome out = link_outcome(std::move(result));
+               Outcome out = link_outcome(std::move(result), before);
                // After link_outcome(): the session is tracked and shown while it is waited for.
-               if (capture)
+               const bool dropped_early = abandoned();
+               if (capture && !dropped_early)
                    wait_capture(started, outcome.get());
+               // Circle during the wait: the capture is stopped, a part it queued is cancelled.
+               if (capture && !dropped_early && abandoned())
+               {
+                   note_cancel("series wait abandoned");
+                   undo_queued(before, nullptr, started.session_id);
+               }
                if (this->log)
                    this->log(parts_line(package_id, link_index, *outcome, now_seconds() - begun));
                return out;
            });
     // A second command posts after the first one's channel update: the callback
     // sees the snapshot and link_action() as they are once this link ended.
-    submit(chan_none,
-           [this, outcome, done = std::move(done)]
-           {
-               inbox_.post([outcome, done] { done(*outcome); });
-               return Outcome{};
-           });
+    // Guarded by the link lane: after cancel() the series hears nothing more.
+    submit(
+        chan_none,
+        [this, outcome, done = std::move(done)]
+        {
+            post_current([outcome, done] { done(*outcome); });
+            return Outcome{};
+        },
+        chan_link);
 }
 
 void Store::debrid_select(const std::string &selection_id, const std::vector<int> &indexes,
@@ -776,7 +1027,10 @@ void Store::debrid_select(const std::string &selection_id, const std::vector<int
 {
     submit(chan_link,
            [this, selection_id, indexes, service]
-           { return link_outcome(backend_.debrid_select(selection_id, indexes, service)); });
+           {
+               const std::set<std::string> before = jobs_before();
+               return link_outcome(backend_.debrid_select(selection_id, indexes, service), before);
+           });
 }
 
 void Store::stop_series()
@@ -826,9 +1080,9 @@ void Store::wait_capture(const CaptureView &started, LinkStart *outcome)
         {
             Lock lock(mutex_);
             const double until = now_seconds() + poll;
-            while (!series_stop_ && !stopping_ && now_seconds() < until)
+            while (!series_stop_ && !stopping_ && !abandoned() && now_seconds() < until)
                 signal_.wait(mutex_, until - now_seconds());
-            if (series_stop_ || stopping_)
+            if (series_stop_ || stopping_ || abandoned())
             {
                 outcome->error = "stopped";
                 outcome->transient = false;
@@ -904,13 +1158,18 @@ void Store::probe_link(const std::string &url)
            {
                Outcome out;
                Result<Probe> result = backend_.probe_link(url);
+               if (abandoned())
+               {
+                   note_cancel("late link check dropped");
+                   return out;
+               }
                out.unreachable = result.unreachable();
                out.error = result.error;
                if (result.ok() && !result.value.rejection.empty())
                    out.error = result.value.rejection;
                if (result.ok() && out.error.empty())
                {
-                   inbox_.post(
+                   post_current(
                        [this, probe = std::move(result.value)]() mutable
                        {
                            state_.probe = std::move(probe);
@@ -924,11 +1183,23 @@ void Store::probe_link(const std::string &url)
 
 void Store::queue_direct(const Probe &probe, const std::string &file_name)
 {
+    next_flag_id_.clear();
+    take_flag_id(); // a direct link is no catalogue link: its jobs are not flagged
     submit(chan_probe,
            [this, probe, file_name]
            {
                Outcome out;
+               const std::set<std::string> before = jobs_before();
                Result<Dispatch> result = backend_.queue_direct(probe, file_name);
+               if (on_answer)
+                   on_answer();
+               if (abandoned())
+               {
+                   note_cancel("late direct link answer dropped");
+                   if (result.ok() && (result.value.queued || result.value.has_jobs))
+                       undo_queued(before, result.value.has_jobs ? &result.value.jobs : nullptr, std::string());
+                   return out;
+               }
                out.error = result.error;
                out.unreachable = result.unreachable();
                if (result.ok())
@@ -1061,13 +1332,29 @@ bool Store::run_next_action()
         command = std::move(commands_.front());
         commands_.pop_front();
     }
+    const int guard = command.guard;
+    const std::uint64_t gen = command.gen;
+    if (guard >= 0 && gen_[guard].load() != gen)
+        return true; // cancelled before it was sent: nothing goes out
+    running_guard_ = guard;
+    running_gen_ = gen;
     const Outcome outcome = command.work();
+    const bool dropped = abandoned();
+    running_guard_ = -1;
+    running_gen_ = 0;
+    if (dropped)
+    {
+        note_cancel("late answer ignored lane=" + std::to_string(guard));
+        return true; // cancel() already ended the lane's busy state
+    }
     if (outcome.unreachable)
         post_failure(outcome.error, true);
     const int channel = command.channel;
     inbox_.post(
-        [this, channel, outcome]
+        [this, channel, outcome, guard, gen]
         {
+            if (guard >= 0 && gen_[guard].load() != gen)
+                return; // cancelled after the answer came, before it was shown
             if (channel >= 0)
             {
                 Channel &c = channel_[channel];

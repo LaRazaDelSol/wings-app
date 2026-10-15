@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       clang clang-18 lld-18 llvm-18 libclang-rt-18-dev clang-format-18 clang-tidy-18 \
       python3 python3-venv python3-pil \
       libegl-dev libgl-dev mesa-common-dev libegl1 libegl-mesa0 libgl1-mesa-dri libwebp-dev \
+      libcurl4-openssl-dev libssl-dev \
       dotnet-sdk-8.0 \
     && rm -rf /var/lib/apt/lists/*
 # The console is x86-64. The OpenGL link group needs compiler-rt builtins for that

@@ -3,6 +3,7 @@
 
 #include "orbit/pegasus_offer.hpp"
 
+#include "orbit/busy_cancel.hpp"
 #include "orbit/i18n.hpp"
 #include "orbit/pegasus_manager.hpp"
 #include "orbit/pegasus_offer_layout.hpp"
@@ -222,6 +223,16 @@ OfferOutcome PegasusOffer::update(const hui::InputFrame &input, bool pegasus_scr
         pm.cancel();
         stage_ = Stage::none;
     }
+    // Circle while downloading, verifying, sending or waiting (B-18): back to the
+    // choices at once; the job's late result changes nothing (PegasusManager::cancel).
+    if (pegasus_screen && focused && !online && flow_.cancellable() && input.is_pressed(hui::Action::back))
+    {
+        if (flow_.cancel_by_player() == LoadCommand::cancel)
+            pm.cancel();
+        stage_ = Stage::none;
+        detail_.clear();
+        feedback.play(hui::audio::Cue::back);
+    }
 
     if (pegasus_screen && focused && flow_.choosable() && !online)
     {
@@ -373,7 +384,9 @@ void PegasusOffer::draw(const ui::Type &type, hui::gfx::DrawList &list, double c
     if (!visible())
         return;
     constexpr float kLineY = 790.0f;
-    const std::string line = status_line();
+    std::string line = status_line();
+    if (!line.empty() && flow_.cancellable())
+        line = with_stop_hint(line.c_str()); // B-18: Circle goes back to the choices
     if (!line.empty())
         ui::text_fit(list, type.regular, line, 960.0f, kLineY, 23.0f, 1500.0f,
                      flow_.retryable() ? ui::color::tier_red : ui::color::text2,

@@ -111,6 +111,7 @@ class PegasusBackend final : public Backend
                                                       std::string_view password) override;
     Result<std::vector<FileOp>> file_pkg_install(std::string_view path) override;
     Result<bool> file_cancel(std::string_view operation_id) override;
+    Result<bool> open_url(std::string_view url) override;
 
     // ---- for tests and the About screen ----
     // Forgets the connection: the next call connects (and probes) again.

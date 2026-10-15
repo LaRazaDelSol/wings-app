@@ -240,6 +240,7 @@ std::string format_request(const Request &request, std::string_view host, std::u
         out += request.bearer;
         out += "\r\n";
     }
+    out += request.headers; // extra "Name: value\r\n" lines, as given
     if (request.method != "GET")
     {
         // The backend accepts mutations only as JSON. No Origin header is sent:

@@ -251,6 +251,12 @@ for asset in icon0.png pic0.dds pic1.dds snd0.at9; do
     [[ -f $root/sce_sys/$asset ]] && cp "$root/sce_sys/$asset" "$app/sce_sys/$asset"
 done
 [[ ! -d $root/assets ]] || cp -a "$root/assets" "$app/assets"
+# Wings: the update helper payload (built by `make helper` into assets/helper/) ships with every
+# package; the app sends it to the payload loader on demand. A package without it is incomplete.
+[[ -s $app/assets/helper/wings-helper.elf ]] || {
+    echo "assets/helper/wings-helper.elf is missing: run 'make helper' first" >&2
+    exit 1
+}
 # Wings: the interface catalogues live in wings/i18n (one level above app/),
 # shared with nothing else yet. English is the key and needs no file, so a
 # missing or empty folder is fine (the glob must not abort the build under set -e).

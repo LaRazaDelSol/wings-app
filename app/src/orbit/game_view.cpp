@@ -5,11 +5,13 @@
 
 #include "orbit/grid_filters.hpp"
 #include "orbit/i18n.hpp"
+#include "orbit/link_flags.hpp"
 #include "orbit/popularity.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <ctime>
 #include <map>
 
 namespace orbit
@@ -546,6 +548,31 @@ int GameView::section_of_mirror(int mirror) const
     return static_cast<int>(page.releases[static_cast<std::size_t>(m.release)].section);
 }
 
+std::string flag_title_id(const GameView &view)
+{
+    return view.title_ids.empty() ? std::string() : view.title_ids.front();
+}
+
+std::string ref_flag_id(const GameView &view, const LinkRef &ref)
+{
+    const GamePage &page = view.page;
+    for (std::size_t i = 0; i < page.links.size(); ++i)
+    {
+        const GameLink &l = page.links[i];
+        if (l.index == ref.link_index && l.package >= 0 && l.package < static_cast<int>(page.packages.size()) &&
+            page.packages[static_cast<std::size_t>(l.package)].id == ref.package_id)
+            return page_link_id(page, static_cast<int>(i), flag_title_id(view));
+    }
+    return {};
+}
+
+// B-20: the console's bad-link flags onto the page, before it is ranked.
+static void apply_flags(GameView *view)
+{
+    if (const LinkFlags *flags = link_flags())
+        apply_link_flags(&view->page, *flags, flag_title_id(*view), static_cast<std::int64_t>(std::time(nullptr)));
+}
+
 void load_game_view(GameView *view, std::vector<PackageDetail> details, const std::vector<std::string> &source_order,
                     const LinkPrefs &prefs)
 {
@@ -569,6 +596,7 @@ void load_game_view(GameView *view, std::vector<PackageDetail> details, const st
         }
     }
     view->page = build_game_page(view->details, source_order);
+    apply_flags(view);
     rank_page(&view->page, prefs);
     count_facets(view, prefs);
     // Research 4.2: firmware, region and format from the preferences, never hiding every download.
@@ -582,6 +610,7 @@ void rerank_game_view(GameView *view, const std::vector<std::string> &source_ord
     if (!view->loaded)
         return;
     view->page = build_game_page(view->details, source_order);
+    apply_flags(view);
     rank_page(&view->page, prefs);
     count_facets(view, prefs);
     MirrorFilter filter = view->filter;
@@ -655,6 +684,16 @@ MirrorCard mirror_card(const GameView &view, int mirror, const LinkPrefs &prefs,
         c.kind = meta.all_dlc ? tr("Game + all DLC") : kind_label(meta.kind);
     c.parts = m.parts_text();
     c.warning = m.warning();
+    const int flagged = m.flagged_link(page);
+    if (flagged >= 0 && flagged < static_cast<int>(page.links.size()))
+    {
+        const GameLink &bad = page.links[static_cast<std::size_t>(flagged)];
+        LinkFlag flag;
+        flag.reason = static_cast<FlagReason>(bad.flag_reason);
+        flag.when = bad.flag_when;
+        c.flag = flag_line(flag);
+        c.flagged = true;
+    }
     c.name = first.name;
     c.tier = m.tier;
     c.needs_browser = m.needs_browser;

@@ -31,12 +31,4 @@ std::string install_failure_hint(std::string_view error)
               "Pegasus. Open Files to look, or install manually.");
 }
 
-std::string failed_download_tip(std::string_view status, int connections)
-{
-    if (status != "failed" || (connections > 0 && connections <= 4))
-        return std::string();
-    return tr("Tip: set Download connections to 4 or lower for the most compatible downloads "
-              "(Settings > Pegasus DL).");
-}
-
 } // namespace orbit

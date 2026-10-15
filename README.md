@@ -26,7 +26,7 @@ One clean page per game. See what every link is before you press it. Manage your
 |---|---|
 | A PS5 app (title ID `PPSA99178`) that is a front end & performance patcher for a **Pegasus DL** on the same console, through its local API at `127.0.0.1:6970`. | Not Pegasus DL, not affiliated with its author, and not a replacement for it. Pegasus does the downloading, installing and extracting. |
 | A better way to browse what Pegasus already knows: games grouped one per tile, links explained, files managed with a controller. | Not a source of games. Wings ships **no catalogues, no sources and no download links**. Only play and use games you legally own and are permitted to install. |
-| Free software, GPL-3.0-or-later, built on the TV app of Orbit Store. | Not Orbit Store. None of Orbit's backend (payload, loader, pairing, update feeds) is in Wings. |
+| Free software, GPL-3.0-or-later, built on the TV app of Orbit Store. | Not Orbit Store. The only part of Orbit's backend in Wings is its small self-update helper, adapted for Wings (see [Updating Wings](docs/guides/updating.md)). |
 
 > **Use it responsibly.** Wings is a front end: it ships no catalogues, sources or links. Use it only with content you own or have permission to download, the same as Pegasus DL asks.
 >
@@ -34,21 +34,26 @@ One clean page per game. See what every link is before you press it. Manage your
 
 ## Screenshots
 
-Rendered from a stand-in back-end. May not represent actual.
+> **Only download and install games you own.** Use Wings with your own backups and archives, or with content you have the right to download and install. Wings ships no games, catalogues, sources or links.
 
 <p>
+  <img src="docs/screenshots/store.png" width="49%" alt="The Store: featured game banner above the game grid">
   <img src="docs/screenshots/store-grid.png" width="49%" alt="The Store grid, one tile per game">
-  <img src="docs/screenshots/game-page.png" width="49%" alt="A game page with the Best card and mirror cards">
 </p>
-
 <p>
-  <img src="docs/screenshots/files-whereto.png" width="49%" alt="The Files tab, Where to? browser">
-  <img src="docs/screenshots/search.png" width="49%" alt="Search with live results and recent searches">
+  <img src="docs/screenshots/game-page.png" width="49%" alt="A game page with its picture, rating and Install">
+  <img src="docs/screenshots/library.png" width="49%" alt="The Library of installed games">
 </p>
 <p>
   <img src="docs/screenshots/downloads.png" width="49%" alt="The downloads queue">
-  <img src="docs/screenshots/settings-wings.png" width="49%" alt="Settings, Wings group">
+  <img src="docs/screenshots/files.png" width="49%" alt="The Files tab">
 </p>
+<p>
+  <img src="docs/screenshots/settings-wings.png" width="49%" alt="Settings, Wings group">
+  <img src="docs/screenshots/update.png" width="49%" alt="Wings updating itself">
+</p>
+
+The games pictured are free and open-source games, shown with their own openly licensed art ([credits](app/host/fixtures/ART-CREDITS.md)); the pictures are rendered from a stand-in back-end, not a real catalogue. They show what Wings looks like, not where to get games: again, only download and install from your own archives or sources you are permitted to use.
 
 ## Credits
 
@@ -80,7 +85,7 @@ Libraries, fonts and versions are listed in full in [CREDITS.md](CREDITS.md). If
 - **Optional popularity.** Sort by most popular or highest rated, and show a score and rating on tiles, from a small public data file. **On by default**; turn it off in Settings. See [Popularity data and privacy](docs/guides/popularity-and-privacy.md).
 - **Tile details setting.** Store tiles show their link tier and regions Always, On focus (default) or Never.
 - **Choose where art comes from.** Settings > Wings > Art sources: cover icons from the catalogue (default) or from Prosperopatches (each title's PS5 icon), and the wide picture behind a game's page from every source (default) or from Prosperopatches only (the PS5's own background).
-- **Knows when it is out of date.** Wings checks this project's latest release when it starts and tells you if a newer one exists, with the steps to install it. It never installs itself. See [Updating Wings](docs/guides/updating.md).
+- **Updates itself, on your say-so.** Wings checks this project's latest release when it starts and tells you if a newer one exists. You can download it from Settings > Wings > Updates; Wings verifies it (size, SHA-256 and the image itself) and installs it only after you confirm, keeping the old file until the new one is in place. Where the console does not allow the swap, it shows the exact steps. See [Updating Wings](docs/guides/updating.md).
 
 ## Install
 
@@ -98,9 +103,9 @@ This is the same setup Orbit Store asks for. Pegasus DL must be running on the c
 4. Wait about ten seconds. ShadowMountPlus registers it and a **Wings** tile appears in the Games row.
 5. Open **Wings**.
 
-To replace an older build under the same title ID (see [Updating Wings](docs/guides/updating.md)), replace the file, remove the staged copies ShadowMountPlus made, then restart the jailbreak chain so the new package is mounted. To remove Wings, close it, delete `/data/homebrew/PPSA99178.ffpkg` (or the folder `/data/homebrew/PPSA99178/`), and restart the jailbreak chain so the tile disappears. Optionally delete `/data/wings/` (diagnostics and a copy of the settings). Pegasus DL and its downloads are not touched.
+Wings 0.1.3 and newer update themselves: when a new version is out, Wings offers it and does Download and Install for you; then close Wings and open it again (see [Updating Wings](docs/guides/updating.md)). By hand: replace the file, remove the staged copies ShadowMountPlus made, then close Wings and open it again. To remove Wings, close it, delete `/data/homebrew/PPSA99178.ffpkg` (or the folder `/data/homebrew/PPSA99178/`), and restart the jailbreak chain so the tile disappears. Optionally delete `/data/wings/` (diagnostics and a copy of the settings) and `/data/wings-helper/` (the update helper's download). Pegasus DL and its downloads are not touched.
 
-Wings writes only to its own folders: `/download0/wings/` (cover cache, settings, diagnostics, inside the title's storage) and `/data/wings/` (diagnostics and a copy of the settings, so you can read them in the file manager).
+Wings writes only to its own folders: `/download0/wings/` (cover cache, settings, diagnostics, bad-link marks, inside the title's storage) and `/data/wings/` (diagnostics and a copy of the settings, so you can read them in the file manager). When you install an update, its helper also writes `/data/wings-helper/` and replaces `/data/homebrew/PPSA99178.ffpkg` (keeping the old one as `.old`).
 
 ## Quick start
 
@@ -156,9 +161,12 @@ Wings has no account, no telemetry that this project operates, and no analytics.
 | Only when you press Check, or at most every 6 hours while Settings > Pegasus DL is open (needs Cover art on) | `api.github.com` (the author's release list, one small file) | Showing the latest official Pegasus DL version. GitHub sees the console's IP address. |
 | Only when you press Download and confirm | `github.com`, then GitHub's `objects.githubusercontent.com` | The official `Pegasus-dl.elf` (about 20 MB), checked against GitHub's SHA-256 before it is saved. Nothing else is accepted. |
 | Popularity **on** (default) | `larazadelsol.github.io` (GitHub Pages), one file, at most once per 24 hours and once after Wings is updated | Scores and ratings, keyed by title ID. GitHub sees the console's IP address. The file has no user data and Wings sends no identifier beyond a fixed `WingsTV/0.1` User-Agent. |
+| Known-problem notes or the featured carousel **on** (default) | `larazadelsol.github.io`, two more small files (`notes.v1.json`, `curated.v1.json`), on the same schedule | A short note on games known not to download, and the list of featured games, keyed by title ID. Same User-Agent, no user data. Turn them off in Settings > Wings > Store extras. |
 | Popularity **on** and Cover art **on**: game-page pictures | The hosts named in the popularity data: `cdn.prosperopatches.com`, `images.igdb.com`, `cdn.cloudflare.steamstatic.com` (HTTPS) | The 16:9 picture behind a game's page, fetched when you open the page and, ahead of time, for the one game your cursor rests on for half a second (at most one every 6 seconds). Those servers see the console's IP address and the picture asked for. Art sources > *Prosperopatches only* limits this to the first host. |
 | Art sources set to **Prosperopatches** (off by default; needs Cover art on) | `cdn.prosperopatches.com` over HTTPS | Cover icons and game-page backgrounds, for the titles the popularity data lists there. Prosperopatches sees the console's IP address and the image asked for. |
 | Update check **on** (default; needs Cover art on) | `api.github.com` (the latest release of this project, one small file), when Wings starts and then at most every 6 hours | Telling you when a newer Wings exists. GitHub sees the console's IP address and the same fixed User-Agent. Turn it off in Settings > Wings > Updates. |
+| Only when you press Download on the update page | `127.0.0.1:9021` (the payload loader on this console), then the update helper on `127.0.0.1:9178`, which downloads from `github.com`, `release-assets.githubusercontent.com` and `objects.githubusercontent.com` | The new Wings package (about 55 MB) and its `.sha256` file, checked before it is kept. GitHub sees the console's IP address. |
+| Only when you choose **Open TorBox website** | The PS5 browser opens `torbox.app`, through Pegasus DL | Checking what TorBox is preparing for you. Wings itself sends nothing to TorBox. |
 
 Turn **Cover art** off and Popularity (which needs it) stops too: Wings then makes **no internet connection at all**. Pegasus DL has its own network behaviour (sources, debrid, downloads); that is Pegasus, not Wings. Details: [Popularity data and privacy](docs/guides/popularity-and-privacy.md).
 

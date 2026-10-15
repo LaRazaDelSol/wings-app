@@ -14,6 +14,7 @@
 #include "orbit/link_sets.hpp"
 #include "orbit/model.hpp"
 
+#include <cstdint>
 #include <functional>
 #include <string>
 #include <string_view>
@@ -68,7 +69,12 @@ struct GameLink
     // shown once, every copy kept.
     bool duplicate = false;      // another link shows this URL; this one is hidden
     std::vector<LinkRef> copies; // on the shown link: the hidden copies
+    // Bad-link flag on this console (link_flags.hpp apply_link_flags()); 0 = none.
+    std::uint8_t flag_reason = 0; // FlagReason
+    std::int64_t flag_when = 0;
 };
+
+struct GamePage;
 
 struct Mirror
 {
@@ -82,6 +88,8 @@ struct Mirror
     LinkTier tier = LinkTier::unknown;  // the worst tier of its links
     bool needs_browser = false;         // any of its links opens the PS5 browser
 
+    // The first flagged link of the mirror (GameLink::flag_reason), or -1.
+    int flagged_link(const GamePage &page) const;
     bool multipart() const
     {
         return status != PartStatus::single;

@@ -156,9 +156,22 @@ const char *status_label(std::string_view status)
         return tr("Completed");
     if (status == "failed")
         return tr("Failed");
+    if (status == "retrying")
+        return tr("Reconnecting");
     if (status == "cancelled")
         return tr("Cancelled");
     return tr("Unknown");
+}
+
+const char *install_label(std::string_view install_state)
+{
+    if (install_state == "installing")
+        return tr("Installing");
+    if (install_state == "installed")
+        return tr("Installed");
+    if (install_state == "install_failed")
+        return tr("Install failed");
+    return nullptr;
 }
 
 std::string format_bytes(double bytes)

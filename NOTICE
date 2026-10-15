@@ -26,8 +26,13 @@ first line ("Wings TV app - ...") and say in a comment which Orbit Store file
 they were adapted from. Orbit Store's name, logo, icon and artwork are not
 used by Wings; Wings' mark, icon and the preview art are original.
 
-Wings contains none of Orbit Store's backend: no Orbit payload, loader launch
-code, pairing, ShadowMount library client, Zero companion code or update feeds.
+Wings contains no Orbit payload, pairing, ShadowMount library client, Zero
+companion code or update feeds. The Wings update helper (wings/app/helper/,
+shipped as assets/helper/wings-helper.elf) is a separate payload that downloads,
+checks and places Wings' own updates. It ports code from Orbit Store's backend
+(backend/tvapp.c and backend/api.c, orbit-store-1.3.5, GPL-3.0-or-later); the
+ported files say so in their first lines. It bundles cJSON (MIT) and statically
+links curl (curl licence) and OpenSSL (Apache-2.0).
 
 ShadowMountPlus
 ---------------
@@ -62,7 +67,7 @@ Components
 
 The app components (kit, ps5-opengl SDK, PS5 payload SDK headers and stubs,
 libwebp, libc++ family, compiler-rt builtins, stb, Inter typeface, glass sound
-set) and their licenses are listed in wings/app/THIRD-PARTY-NOTICES.md. The
+set, and the update helper's cJSON, curl and OpenSSL) and their licenses are listed in wings/app/THIRD-PARTY-NOTICES.md. The
 Inter typeface is under the SIL Open Font License 1.1; keep
 app/third_party/fonts/Inter-LICENSE.txt and assets/fonts/Inter-LICENSE.txt
 with the fonts.

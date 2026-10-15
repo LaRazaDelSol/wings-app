@@ -81,6 +81,14 @@ Section section_of(LinkKind kind)
     return Section::other;
 }
 
+int Mirror::flagged_link(const GamePage &page) const
+{
+    for (const int l : links)
+        if (l >= 0 && l < static_cast<int>(page.links.size()) && page.links[static_cast<std::size_t>(l)].flag_reason != 0)
+            return l;
+    return -1;
+}
+
 std::string Mirror::parts_text() const
 {
     if (!multipart())

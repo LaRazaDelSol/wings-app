@@ -9,6 +9,8 @@
 #include "orbit/mark.hpp"
 #include "orbit/screens.hpp"
 #include "orbit/i18n.hpp"
+#include "orbit/update_screen.hpp"
+#include "orbit/wings_install.hpp"
 #include "orbit/wings_update.hpp"
 
 #include <algorithm>
@@ -80,6 +82,99 @@ App::App(Context &context)
         reset.reset_filters();
         store_.set_catalogue_state(reset);
     };
+    // Settings > Wings update and the update page read the one flow (checker + installer).
+    context.wings_update_view = [](UpdateView &view)
+    { return update_view_from_flow(wings_flow_snapshot(wings_update().status(), wings_installer().status()), &view); };
+}
+
+void App::start_update_download()
+{
+    const WingsUpdateStatus up = wings_update().status();
+    if (!up.have_latest)
+        return;
+    WingsRelease release;
+    release.tag = up.latest_tag;
+    release.asset = up.asset;
+    wings_installer().start_download(release);
+}
+
+bool App::show_update(bool dialog)
+{
+    UpdateView view;
+    if (!ctx_.wings_update_view || !ctx_.wings_update_view(view))
+        return false;
+    if (dialog)
+    {
+        update_page_.close();
+        update_dialog_.open(view);
+    }
+    else
+    {
+        update_dialog_.close();
+        update_page_.open(view);
+    }
+    return true;
+}
+
+void App::update_flow(const InputFrame &input, float dt, Feedback &feedback)
+{
+    const InputFrame idle{};
+    UpdateView view;
+    const bool known = ctx_.wings_update_view && ctx_.wings_update_view(view);
+    if (!known && update_page_.is_open())
+        update_page_.close(); // nothing newer any more (the switch went off): nothing to follow
+    const bool had_confirm = install_confirm_.is_open();
+    const bool had_dialog = update_dialog_.is_open();
+    const bool had_page = update_page_.is_open();
+
+    // "Install Wings X?" sits on top of the page.
+    if (install_confirm_.update(had_confirm ? input : idle, dt, feedback) == ConfirmDialog::Result::confirmed)
+        wings_installer().install(install_replace_);
+
+    // The startup dialog: Update now opens the page and starts the download; Later snoozes this release.
+    const UpdateAction said = update_dialog_.update(had_dialog && !had_confirm ? input : idle, dt, feedback);
+    if (said == UpdateAction::update_now)
+    {
+        if (known)
+            update_page_.open(view);
+        start_update_download();
+    }
+    else if (said == UpdateAction::later)
+    {
+        wings_update().snooze_latest();
+    }
+
+    const UpdateAction act =
+        update_page_.update(view, had_page && !had_dialog && !had_confirm ? input : idle, dt, feedback);
+    switch (act)
+    {
+    case UpdateAction::update_now:
+    case UpdateAction::retry:
+        start_update_download();
+        break;
+    case UpdateAction::cancel:
+        if (view.kind == UpdateView::Kind::ready_to_install)
+            update_page_.close(); // the verified file stays; Install is offered again from Settings
+        else
+            wings_installer().cancel();
+        break;
+    case UpdateAction::install:
+    {
+        const WingsInstallStatus st = wings_installer().status();
+        install_replace_ = st.needs_replace_confirm;
+        install_confirm_.open(tr("Install Wings {version}?", {{"version", view.latest}}),
+                              wings_install_confirm_text(st, view.latest), tr("Install"), tr("Not now"),
+                              install_replace_);
+        feedback.play(hui::audio::Cue::modal_open);
+        break;
+    }
+    case UpdateAction::quit_now:
+        if (ctx_.close_app)
+            ctx_.close_app();
+        break;
+    default: // none, later, back (the page closed itself)
+        break;
+    }
 }
 
 Screen &App::screen()
@@ -136,6 +231,16 @@ void App::handle_intent(const Intent &intent, Feedback &feedback)
         show_tab(intent.tab);
         feedback.play(hui::audio::Cue::tab);
         break;
+    case Intent::Kind::open_update:
+    {
+        UpdateView view;
+        if (ctx_.wings_update_view && ctx_.wings_update_view(view))
+        {
+            update_page_.open(view);
+            feedback.play(hui::audio::Cue::modal_open);
+        }
+        break;
+    }
     default:
         break;
     }
@@ -162,20 +267,31 @@ void App::update(const InputFrame &input, float dt, Feedback &feedback)
     after_install_.update(static_cast<double>(ctx_.clock), ctx_.store.state().jobs,
                           ctx_.store.state().have_queue);
     // A newer Wings: ask GitHub once the network is ready (at most every 6 hours; the service decides),
-    // and say so once per start. Checked every two seconds, not every frame.
+    // and offer it in the startup dialog once per start unless snoozed. Checked every two seconds.
     update_poll_ += dt;
     if (update_poll_ >= 2.0f)
     {
         update_poll_ = 0.0f;
         wings_update().auto_check();
-        if (!update_announced_)
+        const WingsUpdateStatus up = wings_update().status();
+        if (up.have_latest && up.advice == WingsAdvice::newer)
         {
-            const WingsUpdateStatus up = wings_update().status();
-            if (up.attached && up.enabled && up.advice == WingsAdvice::newer)
+            // The release is known: the installer picks up a file verified for it in an earlier start.
+            WingsRelease release;
+            release.tag = up.latest_tag;
+            release.asset = up.asset;
+            wings_installer().note_release(release);
+        }
+        if (!update_modal() && !capture_panel_open())
+        {
+            const WingsFlowSnapshot flow = wings_flow_snapshot(up, wings_installer().status());
+            UpdateView view;
+            // take_prompt last: it marks the release as offered.
+            if (flow.state == WingsFlowState::available && update_view_from_flow(flow, &view) &&
+                wings_update().take_prompt())
             {
-                update_announced_ = true;
-                show_toast(wings_update_toast(up), 8.0f);
-                feedback.play(hui::audio::Cue::notify);
+                update_dialog_.open(view);
+                feedback.play(hui::audio::Cue::modal_open);
             }
         }
     }
@@ -196,6 +312,24 @@ void App::update(const InputFrame &input, float dt, Feedback &feedback)
         const bool shown_before = capture_panel_open();
         update_capture(input, dt, fb);
         if (shown_before || capture_panel_open())
+        {
+            const InputFrame quiet{};
+            screen().update(quiet, dt, feedback, false);
+            for (int i = 0; i < kTabCount; ++i)
+            {
+                top_focus_[static_cast<std::size_t>(i)].target =
+                    area_ == Area::top && i == top_index_ ? 1.0f : 0.0f;
+                top_focus_[static_cast<std::size_t>(i)].update(dt, 16.0f);
+            }
+            return;
+        }
+    }
+
+    // The update dialog, page and install confirm sit above the tabs and take the input.
+    {
+        const bool shown_before = update_modal();
+        update_flow(input, dt, feedback);
+        if (shown_before || update_modal())
         {
             const InputFrame quiet{};
             screen().update(quiet, dt, feedback, false);
@@ -588,10 +722,19 @@ void App::draw(Frame &frame) const
     }
 
     draw_capture(frame);
+    update_page_.draw(ctx_, frame);
+    update_dialog_.draw(ctx_, frame);
+    install_confirm_.draw(ctx_, frame);
 
     // ---- controller hints, over a fade that lets content scroll beneath ----
     std::vector<hui::ui::Hint> items;
-    if (capture_panel_open())
+    if (install_confirm_.is_open())
+        items = {{hui::ui::Button::cross, tr("Select")}, {hui::ui::Button::circle, tr("Back")}};
+    else if (update_dialog_.is_open())
+        items = update_dialog_.hints();
+    else if (update_page_.is_open())
+        items = update_page_.hints();
+    else if (capture_panel_open())
         items = {{hui::ui::Button::cross, tr("Select")}, {hui::ui::Button::circle, tr("Hide")}};
     else if (area_ == Area::top)
         items = {{hui::ui::Button::cross, tr("Select")},

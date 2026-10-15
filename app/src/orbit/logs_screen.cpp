@@ -3,6 +3,7 @@
 
 #include "orbit/screens.hpp"
 
+#include "orbit/busy_cancel.hpp"
 #include "orbit/diagnostics.hpp"
 #include "orbit/model.hpp"
 
@@ -153,6 +154,12 @@ Intent LogsScreen::update(const InputFrame &input, float dt, Feedback &feedback,
     const Snapshot &state = ctx_.store.state();
     if (!diagnostics_)
         ctx_.store.want_logs(true);
+    // Circle on "Asking Pegasus DL...": back at once, the late answer is ignored (B-18).
+    if (ctx_.store.lane_state(Store::lane_admin).busy && input.is_pressed(Action::back))
+    {
+        ctx_.store.cancel(Store::lane_admin);
+        return intent;
+    }
     const bool had_confirm = confirm_.is_open();
     const bool had_list = list_.is_open();
     const bool busy = ctx_.store.lane_state(Store::lane_admin).busy;
@@ -360,7 +367,7 @@ void LogsScreen::draw(Frame &frame, bool focused) const
         list.pop_clip();
     }
     if (ctx_.store.lane_state(Store::lane_admin).busy)
-        draw_busy(ctx_, frame.overlay, tr("Asking Pegasus DL\xE2\x80\xA6"));
+        draw_busy(ctx_, frame.overlay, with_stop_hint(tr("Asking Pegasus DL\xE2\x80\xA6")).c_str());
     confirm_.draw(ctx_, frame);
     list_.draw(ctx_, frame);
 }

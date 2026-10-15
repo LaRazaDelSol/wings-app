@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <map>
 #include <set>
 #include <string>
 #include <vector>
@@ -158,6 +159,20 @@ class Store
         return channel_[3].state;
     }
 
+    // Lane numbers of the four player-action channels above, for cancel().
+    static constexpr int lane_jobs = 0;
+    static constexpr int lane_link = 1;
+    static constexpr int lane_sources = 2;
+    static constexpr int lane_probe = 3;
+
+    // ---- Circle on a waiting screen (B-18) ----
+    // Frame thread: the player backed out. The lane is not busy any more right
+    // away, its queued actions are dropped unsent, and an answer still in flight
+    // is ignored when it comes (one "[WINGS-CANCEL] ..." line to `log`). A link
+    // start or direct link Pegasus queued anyway is cancelled in Pegasus, and a
+    // capture it started is stopped: nothing half-done stays queued.
+    void cancel(int lane);
+
     // ---- management calls (settings, folders, APR Emu, file manager, logs) ----
     // Lanes: admin and files show a busy state; poll is for status polls that
     // must not flash one. Calls run in order on the worker, the callback on the
@@ -176,8 +191,9 @@ class Store
                    Outcome out;
                    out.error = result.error;
                    out.unreachable = result.unreachable();
-                   inbox_.post([done, result = std::move(result)]() mutable
-                               { done(std::move(result)); });
+                   // Dropped when the lane was cancelled meanwhile (Circle).
+                   post_current([done, result = std::move(result)]() mutable
+                                { done(std::move(result)); });
                    return out;
                });
     }
@@ -241,6 +257,26 @@ class Store
     // capture that needs the PS5 browser is not waited for: it ends with an error.
     void start_link(const std::string &package_id, int link_index, const std::string &service,
                     std::function<void(const LinkStart &)> done);
+    // ---- bad-link flags on this console (B-20) ----
+    // Frame thread, right before start_link(): the link_flags.hpp id of that
+    // link. The downloads that start queues are flagged in link_flags() when
+    // they end "failed" for a reason of the link (reason_from_error(), or wrong
+    // file for an install failure); a job that is cancelled or still being
+    // reconnected ("retrying") is not. Cancelling a job that waits for an
+    // archive password flags "password never worked".
+    // `title` is the game's name the flag shows in Settings.
+    void set_link_flag_id(const std::string &id, const std::string &title = {})
+    {
+        next_flag_id_ = id;
+        next_flag_title_ = title;
+    }
+    // Tests: the flag id a queued job is remembered under ("" none).
+    std::string job_flag_id(const std::string &job_id) const;
+    // Tests: a queue read as the worker would post it (tick() delivers it).
+    void post_jobs_for_test(std::vector<Job> jobs)
+    {
+        post_jobs(std::move(jobs));
+    }
     // Frame thread: a series start_link() waiting for a capture ends at its next
     // poll with the error "stopped". Cleared by the next series start_link().
     void stop_series();
@@ -250,6 +286,9 @@ class Store
     // Optional: one "[WINGS-PARTS] ..." line per series start_link(), from the worker.
     // Set before start().
     std::function<void(const std::string &)> log;
+    // Tests: runs on the worker right after Pegasus answered a link start,
+    // file pick or direct-link queue, before the answer is used (cancel there).
+    std::function<void()> on_answer;
     void debrid_select(const std::string &selection_id, const std::vector<int> &indexes,
                        const std::string &service);
     // False (and nothing sent) while Pegasus is already resolving the link.
@@ -287,14 +326,29 @@ class Store
     {
         int channel = 0;
         std::function<Outcome()> work;
+        int guard = -1;         // the lane whose cancel() drops this command (-1: none)
+        std::uint64_t gen = 0;  // that lane's generation when it was submitted
     };
+    static constexpr int kLanes = 7;
+    static constexpr int kSameLane = -2;
     struct Channel
     {
         ActionState state;
         int pending = 0; // frame thread: queued actions without a result yet
     };
 
-    void submit(int channel, std::function<Outcome()> work);
+    void submit(int channel, std::function<Outcome()> work, int guard = kSameLane);
+    // Worker, inside a command: the player cancelled its lane since it was submitted.
+    bool abandoned() const;
+    // Worker, inside a command: posts `apply`, dropped at drain time if abandoned by then.
+    void post_current(std::function<void()> apply);
+    void note_cancel(const std::string &what);
+    // Worker: job ids Pegasus listed before a queueing call (reads the queue once if none seen yet).
+    std::set<std::string> jobs_before();
+    // Worker, after an abandoned queueing call: cancels the downloads it added
+    // (`after`: the reply's queue, or nullptr to read it) and stops `session`'s capture.
+    void undo_queued(const std::set<std::string> &before, const std::vector<Job> *after,
+                     const std::string &session);
     void worker();
     void catalog_worker();
     void post_failure(const std::string &error, bool unreachable);
@@ -303,7 +357,8 @@ class Store
     void post_capture(CaptureView view);
     Outcome jobs_outcome(Result<std::vector<Job>> &&result);
     Outcome sources_outcome(Result<std::vector<Source>> &&result);
-    Outcome link_outcome(Result<LinkResult> &&result);
+    // `before`: jobs_before() taken ahead of the call, to undo it if abandoned.
+    Outcome link_outcome(Result<LinkResult> &&result, const std::set<std::string> &before);
     void post_defaults(DefaultSources defaults);
     void post_tiers(Result<std::vector<std::uint8_t>> &&tiers);
     void note_sources(const std::vector<Source> &sources);
@@ -314,12 +369,28 @@ class Store
     void wait_capture(const CaptureView &started, LinkStart *outcome);
     void track_session(const CaptureView &view);
 
+    // Frame thread: remembers the jobs a flagged start queued, flags the failed ones.
+    void take_flag_id();
+    void note_flag_jobs(const std::vector<Job> &jobs);
+    void flag_job(const std::string &job_id, int reason);
+
     Backend &backend_;
     Inbox inbox_;
     Snapshot state_;
+    // Frame thread (B-20).
+    std::string next_flag_id_;               // set_link_flag_id(), taken by start_link()
+    std::string pending_flag_id_;            // the last start's link: new jobs are its
+    double pending_flag_at_ = 0.0;           // when that start was sent
+    std::string next_flag_title_;            // the game's name of those
+    std::string pending_flag_title_;
+    std::map<std::string, std::string> job_flag_ids_; // job id -> link flag id
+    std::map<std::string, std::string> job_flag_titles_; // job id -> game name
+    std::set<std::string> flagged_jobs_;     // already flagged while failed
     bool default_folder_tried_ = false; // frame thread
     std::string default_folder_status_; // frame thread
-    Channel channel_[7];
+    Channel channel_[kLanes];
+    // Bumped by cancel() on the frame thread; read by the worker.
+    std::atomic<std::uint64_t> gen_[kLanes] = {};
 
     // Shared with the workers.
     Mutex mutex_;
@@ -356,6 +427,10 @@ class Store
     bool capture_recovered_ = false;
     int tiers_ready_bits_ = 0; // debrid accounts the grid's tiers were computed for
     std::set<std::string> seen_completed_;
+    std::set<std::string> known_jobs_; // ids of the last queue posted
+    bool known_jobs_valid_ = false;
+    int running_guard_ = -1;          // the command being run: its guard lane
+    std::uint64_t running_gen_ = 0;   // and that lane's generation then
 };
 
 } // namespace orbit

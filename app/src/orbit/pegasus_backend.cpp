@@ -3,6 +3,9 @@
 
 #include "orbit/pegasus_backend.hpp"
 
+#include "orbit/download_auto_retry.hpp"
+#include "orbit/pkg_install.hpp"
+
 #include "wings/logic.hpp"
 
 #include <algorithm>
@@ -150,6 +153,39 @@ std::vector<Job> to_jobs(const wings::QueueSnapshot &queue)
     for (const wings::QueueJob &j : queue.jobs)
         jobs.push_back(to_job(j));
     return jobs;
+}
+
+// What the auto-reconnect model reads from each queue entry.
+std::vector<RetryJobSnapshot> retry_snapshots(const wings::QueueSnapshot &queue)
+{
+    std::vector<RetryJobSnapshot> out;
+    out.reserve(queue.jobs.size());
+    for (const wings::QueueJob &j : queue.jobs)
+    {
+        RetryJobSnapshot s;
+        s.id = std::to_string(j.id);
+        s.status = status_name(j.status);
+        s.error = j.error;
+        s.detail = j.detail;
+        s.received = static_cast<double>(j.bytesDone);
+        s.resumable = j.supportsResume || j.resumed;
+        out.push_back(std::move(s));
+    }
+    return out;
+}
+
+// A failed job Wings is about to retry (or just retried) reads "retrying", not "failed".
+void mark_reconnecting(std::vector<Job> *jobs)
+{
+    using Kind = DownloadAutoRetry::View::Kind;
+    for (Job &job : *jobs)
+    {
+        if (job.status != "failed")
+            continue;
+        const Kind kind = download_reconnect().view(job.id).kind;
+        if (kind == Kind::waiting || kind == Kind::reconnecting)
+            job.status = "retrying";
+    }
 }
 
 Source to_source(const wings::Source &s)
@@ -340,6 +376,118 @@ FileOp to_op(const wings::FileOperation &o)
     op.cancelable = o.cancelable;
     op.cancel_requested = o.cancelRequested;
     return op;
+}
+
+// ---- B-17: a .pkg downloaded to disk, then installed (pkg_install.hpp) ----
+
+std::vector<PkgOpSeen> pkg_ops_of(const std::vector<wings::FileOperation> &ops)
+{
+    std::vector<PkgOpSeen> out;
+    for (const wings::FileOperation &o : ops)
+    {
+        const FileOp op = to_op(o);
+        out.push_back({op.id, op.type, op.status, op.error});
+    }
+    return out;
+}
+
+// One queue poll: feed the snapshot, then do the next few steps (rename, install, then
+// at most one operations poll, installed-games check or delete).
+void drive_pkg_installs(wings::IPegasus &a, const wings::QueueSnapshot &queue)
+{
+    std::vector<PkgJobSeen> seen;
+    seen.reserve(queue.jobs.size());
+    for (const wings::QueueJob &j : queue.jobs)
+        seen.push_back({std::to_string(j.id), status_name(j.status), j.destinationPath, j.error});
+    PkgInstalls &pkgs = pkg_installs();
+    pkgs.observe_queue(seen);
+    for (int i = 0; i < 4; ++i)
+    {
+        const PkgStep step = pkgs.next();
+        switch (step.kind)
+        {
+        case PkgStep::Kind::none:
+            return;
+        case PkgStep::Kind::rename:
+        {
+            const auto r = a.fileRename(step.path, step.name);
+            pkgs.renamed(step.job_id, r.ok(), r.ok() ? r.value.path : std::string(),
+                         r.ok() ? std::string() : r.error.message);
+            break;
+        }
+        case PkgStep::Kind::install:
+        {
+            if (step.title_id.empty())
+            {
+                // No title id: the install is confirmed later by a title that was not there before.
+                const auto games = a.getInstalledGames();
+                if (games.ok())
+                {
+                    std::vector<std::string> ids;
+                    for (const wings::InstalledGame &g : games.value.titles)
+                        ids.push_back(g.titleId);
+                    pkgs.titles_before(step.job_id, ids);
+                }
+            }
+            const auto r = a.filePkgInstall(step.path);
+            pkgs.install_started(step.job_id, r.ok(), r.ok() ? pkg_ops_of(r.value) : std::vector<PkgOpSeen>(),
+                                 r.ok() ? std::string() : r.error.message);
+            if (!r.ok())
+                return;
+            break;
+        }
+        case PkgStep::Kind::poll:
+        {
+            const auto r = a.fileOperations();
+            if (r.ok())
+                pkgs.observe_ops(pkg_ops_of(r.value));
+            return;
+        }
+        case PkgStep::Kind::confirm:
+        {
+            const auto r = a.getInstalledGames();
+            if (!r.ok())
+                return;
+            std::vector<std::string> ids;
+            for (const wings::InstalledGame &g : r.value.titles)
+                ids.push_back(g.titleId);
+            pkgs.confirmed(step.job_id, pkg_install_seen(step.title_id, step.before, ids));
+            return;
+        }
+        case PkgStep::Kind::remove:
+        {
+            const auto r = a.fileDelete({step.path});
+            pkgs.removed(step.job_id, r.ok(), r.ok() ? std::string() : r.error.message);
+            return;
+        }
+        }
+    }
+}
+
+// The download row reads the install stage of a tracked .pkg job.
+void mark_pkg_installs(std::vector<Job> *jobs)
+{
+    for (Job &job : *jobs)
+    {
+        if (job.status != "completed")
+            continue;
+        switch (pkg_installs().stage(job.id))
+        {
+        case PkgStage::downloading:
+            continue;
+        case PkgStage::renaming:
+        case PkgStage::installing:
+            job.install_state = "installing";
+            break;
+        case PkgStage::installed:
+            job.install_state = "installed";
+            break;
+        case PkgStage::failed:
+            job.install_state = "install_failed";
+            break;
+        }
+        job.install_text = pkg_installs().row_text(job.id);
+    }
 }
 
 AprView to_apr(const wings::AprEmu &a)
@@ -717,14 +865,31 @@ Result<std::vector<Job>> PegasusBackend::queue()
     const Api a = need_api(&out);
     if (!a)
         return out;
-    const wings::Result<wings::QueueSnapshot> reply = a->getQueue();
+    wings::Result<wings::QueueSnapshot> reply = a->getQueue();
     if (!reply.ok())
     {
         fail(&out, reply.error);
         return out;
     }
+    // Dropped downloads are retried here, on every Store poll, whatever screen is open.
+    const std::vector<std::string> due = download_reconnect().observe(retry_snapshots(reply.value));
+    if (!due.empty())
+    {
+        for (const std::string &id : due)
+        {
+            const wings::Result<wings::QueueResponse> sent = a->retryJob(to_id(id));
+            download_reconnect().sent(id, sent.ok(), sent.ok() ? std::string() : sent.error.message);
+        }
+        wings::Result<wings::QueueSnapshot> again = a->getQueue();
+        if (again.ok())
+            reply = std::move(again);
+    }
+    // A .pkg that downloaded to disk is renamed and installed from here too.
+    drive_pkg_installs(*a, reply.value);
     out.status = 200;
     out.value = to_jobs(reply.value);
+    mark_reconnecting(&out.value);
+    mark_pkg_installs(&out.value);
     return out;
 }
 
@@ -982,6 +1147,7 @@ Result<std::vector<Job>> PegasusBackend::jobs_after(
     if (reply.value.hasQueue)
     {
         out.value = to_jobs(reply.value.queue);
+        mark_reconnecting(&out.value);
         return out;
     }
     const wings::Result<wings::QueueSnapshot> queue = api.getQueue();
@@ -991,6 +1157,7 @@ Result<std::vector<Job>> PegasusBackend::jobs_after(
         return out;
     }
     out.value = to_jobs(queue.value);
+    mark_reconnecting(&out.value);
     return out;
 }
 
@@ -1085,6 +1252,67 @@ Result<LinkResult> PegasusBackend::start_link(std::string_view package_id, int l
         return out;
     case Kind::nativePkg:
     {
+        // B-17: per link, try a fast download to disk first. Asking for "<Title>.fpkg" keeps the
+        // file in Pegasus' own queue; it is renamed to .pkg and installed when it finishes
+        // (drive_pkg_installs). The old hand-off to the PS5's Downloads is the fallback.
+        const std::string link = "link " + std::string(package_id) + "/" + std::to_string(action.linkIndex);
+        const std::string url = wings::logic::safeHttpUrl(action.url);
+        bool probe_ok = false;
+        wings::ResolveProbe probe;
+        if (!url.empty())
+        {
+            auto probed = a->resolveProbe(url);
+            if (probed.ok())
+            {
+                probe_ok = true;
+                probe = std::move(probed.value);
+            }
+        }
+        const double size = probe_ok && probe.hasContentLength ? static_cast<double>(probe.contentLength) : -1.0;
+        std::vector<StorageMount> mounts;
+        if (size > 0.0)
+        {
+            const auto places = a->getMounts(); // GET /api/mounts: small, has free bytes
+            if (places.ok())
+            {
+                for (const wings::Mount &m : places.value)
+                    mounts.push_back(to_mount(m));
+            }
+        }
+        const PkgRouteChoice route = pkg_route_before_queue(
+            probe_ok, probe_ok ? wings::logic::probeRejection(probe) : std::string(), size,
+            current_settings().downloadRoot, mounts);
+        pkg_installs().log(link + ": " + (route.route == PkgRoute::direct ? "direct" : "hand-off") + " (" +
+                           route.reason + ")");
+        if (route.route == PkgRoute::direct)
+        {
+            const std::string stem = pkg_file_stem(!pkg.title.empty() ? pkg.title : probe.fileName);
+            const auto direct = a->queueDirect(probe.finalUrl.empty() ? url : probe.finalUrl, stem + ".fpkg",
+                                               probe.contentType);
+            const wings::DispatchResult *first =
+                direct.ok() && !direct.value.dispatchResults.empty() ? &direct.value.dispatchResults.front()
+                                                                     : nullptr;
+            const PkgDirectAnswer answer = pkg_classify_direct(
+                direct.ok(), first != nullptr && first->kind == wings::DispatchKind::nativePkg,
+                first != nullptr && first->kind == wings::DispatchKind::queued, first ? first->jobId : 0);
+            if (answer == PkgDirectAnswer::track)
+            {
+                pkg_installs().track(std::to_string(first->jobId), pkg.title, pkg.titleId, stem + ".pkg");
+                out.value.kind = LinkResult::Kind::dispatched;
+                out.value.dispatch = to_dispatch(direct.value, "Download queued. It installs when it finishes.");
+                return out;
+            }
+            if (answer == PkgDirectAnswer::handed_off)
+            {
+                pkg_installs().log(link + ": Pegasus handed it to the PS5's Downloads anyway");
+                out.value.kind = LinkResult::Kind::dispatched;
+                out.value.dispatch = to_dispatch(direct.value, "Download queued.");
+                return out;
+            }
+            pkg_installs().log(link + ": direct queue refused (" +
+                               (direct.ok() ? std::string("no job id") : direct.error.message) +
+                               "); using the hand-off");
+        }
         const auto reply = a->enqueuePackage(pid, action.linkIndex);
         if (!reply.ok())
         {
@@ -1895,6 +2123,16 @@ Result<bool> PegasusBackend::file_cancel(std::string_view operation_id)
 {
     WB_API(bool)
     const auto reply = a->fileOperationCancel(to_id(operation_id));
+    WB_CHECK(reply)
+    out.status = 200;
+    out.value = true;
+    return out;
+}
+
+Result<bool> PegasusBackend::open_url(std::string_view url)
+{
+    WB_API(bool)
+    const auto reply = a->browserOpen(std::string(url), false, std::nullopt, std::nullopt);
     WB_CHECK(reply)
     out.status = 200;
     out.value = true;

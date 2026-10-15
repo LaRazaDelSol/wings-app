@@ -5,6 +5,7 @@
 // against the fake backend; nothing in this file talks to a real Pegasus DL.
 
 #include "fake_backend.hpp"
+#include "orbit/torbox_status.hpp"
 #include "orbit/screens.hpp"
 #include "support.hpp"
 
@@ -128,7 +129,9 @@ TEST(SettingsEditing, ADebridTokenIsTypedMaskedSentOnceAndNeverShownBack)
     EXPECT_EQ(m.store.state().settings.torbox.configured, false);
     select_setting(m, "TorBox");
     EXPECT_TRUE(m.app.settings_screen().modal());
-    EXPECT_EQ(m.app.settings_screen().menu_codes().size(), 3u);
+    // Set, Check, Remove and (TorBox only) Open TorBox website.
+    EXPECT_EQ(m.app.settings_screen().menu_codes().size(), 4u);
+    EXPECT_EQ(m.app.settings_screen().menu_codes().back(), "open-site");
     m.press(Action::confirm); // "Set or replace the token"
     ASSERT_TRUE(m.app.settings_screen().prompt_open());
     m.app.settings_screen().type_into_prompt("good-secret-token-123");
@@ -147,6 +150,21 @@ TEST(SettingsEditing, ADebridTokenIsTypedMaskedSentOnceAndNeverShownBack)
         EXPECT_EQ(row.detail.find("good-secret"), std::string::npos);
         EXPECT_EQ(row.right.find("good-secret"), std::string::npos);
     }
+}
+
+// B-19: the TorBox menu opens the TorBox website in the PS5 browser through Pegasus.
+TEST(SettingsEditing, TheTorBoxMenuOpensTheTorBoxWebsite)
+{
+    Mgr m(true, tab::settings);
+    m.app.settings_screen().set_group(SettingsScreen::Group::pegasus);
+    select_setting(m, "TorBox");
+    ASSERT_EQ(m.app.settings_screen().menu_codes().back(), "open-site");
+    m.down(3);
+    m.press(Action::confirm);
+    m.work();
+    const std::vector<std::string> opened = m.backend.opened_urls();
+    ASSERT_EQ(opened.size(), 1u);
+    EXPECT_EQ(opened[0], kTorboxDashboardUrl);
 }
 
 TEST(SettingsEditing, ATokenPegasusRejectsIsReportedAsNotValid)

@@ -15,17 +15,23 @@
 #include "gfx/renderer.hpp"
 #include "orbit/art.hpp"
 #include "orbit/cover_art.hpp"
+#include "orbit/download_auto_retry.hpp"
+#include "orbit/pkg_install.hpp"
 #include "orbit/pegasus_manager.hpp"
 #include "orbit/editorial.hpp"
 #include "orbit/game_header.hpp"
 #include "orbit/popularity.hpp"
 #include "orbit/steam_reviews.hpp"
+#include "orbit/stream_download.hpp"
+#include "orbit/wings_helper_client.hpp"
+#include "orbit/wings_install.hpp"
 #include "orbit/wings_update.hpp"
 #include "orbit/prefs.hpp"
 #include "orbit/diagnostics.hpp"
 #include "orbit/gl_textures.hpp"
 #include "orbit/http.hpp"
 #include "orbit/i18n.hpp"
+#include "orbit/link_flags.hpp"
 #include "orbit/mark.hpp"
 #include "orbit/screens.hpp"
 #include "orbit/shadowmount_scan.hpp"
@@ -90,6 +96,11 @@ std::vector<std::string> catalogue_paths()
 std::vector<std::string> wings_prefs_paths()
 {
     return {std::string(kWingsDir) + "/linkprefs.v1", "/data/wings/linkprefs.v1"};
+}
+
+std::vector<std::string> link_flags_paths()
+{
+    return {std::string(kWingsDir) + "/link_flags.v1", "/data/wings/link_flags.v1"};
 }
 
 std::vector<std::string> prefs_paths()
@@ -201,6 +212,44 @@ class ConsolePegasusDownloader final : public orbit::PegasusDownloader
             out.error += (out.error.empty() ? "" : " ") + std::string("(check the console clock)");
         hui::sys::log("[WINGS-PEGASUS] GET status=%d bytes=%zu %s", d.status, out.body.size(), out.error.c_str());
         return out;
+    }
+
+  private:
+    wings::art::ArtService &service_;
+};
+
+// Streaming downloads (orbit/stream_download.hpp): the same TLS client and network gate, the body
+// goes to a file in chunks instead of memory.
+class ConsoleStreamingDownloader final : public orbit::StreamingDownloader
+{
+  public:
+    explicit ConsoleStreamingDownloader(wings::art::ArtService &service) : service_(service) {}
+    bool ready(std::string *why) override
+    {
+        const wings::art::ServiceState state = service_.state();
+        if (state.phase == wings::art::Phase::ready)
+            return true;
+        *why = state.detail.empty() ? std::string("The network is off. Turn on cover downloads first.")
+                                    : state.detail;
+        return false;
+    }
+    std::string get_stream(const std::string &url, std::uint64_t max_bytes, const orbit::StreamHooks &hooks,
+                           const std::function<bool(const std::uint8_t *, std::size_t)> &sink,
+                           int *status) override
+    {
+        wings::art::ArtService::DownloadHooks h;
+        h.redirect_ok = hooks.redirect_ok;
+        h.progress = hooks.progress;
+        h.cancel = hooks.cancel;
+        h.sink = sink;
+        h.total_timeout_s = 1800;
+        wings::art::ArtService::Download d = service_.fetch_download(url, static_cast<std::size_t>(max_bytes), h);
+        *status = d.status;
+        std::string error = d.error;
+        if (d.time_error)
+            error += (error.empty() ? "" : " ") + std::string("(check the console clock)");
+        hui::sys::log("[WINGS-UPDATE] stream status=%d %s", d.status, error.c_str());
+        return error;
     }
 
   private:
@@ -480,6 +529,40 @@ int main()
         wu.running = app_content_version;
         orbit::wings_update().attach(std::move(wu));
     }
+    // Fetching and placing a newer package, only on the player's confirmed presses (wings_install.hpp).
+    ConsoleStreamingDownloader update_downloader(art_service);
+    // The Wings update helper: a status read on its loopback port; when nothing answers, the shipped ELF goes
+    // to the payload loader (the same socket send Pegasus DL uses).
+    orbit::http::SocketTransport helper_transport(kBackend, orbit::kWingsHelperPort, 2000);
+    orbit::WingsHelperClient update_helper(
+        helper_transport,
+        [](const std::string &elf, std::string *why)
+        {
+            return orbit::send_file_to_loopback(kBackend, orbit::kPegasusLoaderPort, elf,
+                                                [](std::uint64_t) {}, why);
+        },
+        std::string(kAssets) + "/helper/wings-helper.elf", orbit::kWingsHelperBuild);
+    {
+        orbit::WingsInstallConfig wi;
+        wi.downloader = &update_downloader;
+        wi.helper = &update_helper;
+        wi.note_dir = kWingsDir;
+        wi.running = app_content_version;
+        wi.log = [&problems](const std::string &line)
+        {
+            hui::sys::log("%s", line.c_str());
+            problems.add(line); // so the update's steps reach diagnostics.txt and the Logs tab
+        };
+        orbit::wings_installer().attach(std::move(wi));
+    }
+    struct InstallStop
+    {
+        ~InstallStop()
+        {
+            orbit::wings_installer().cancel();
+            orbit::wings_installer().wait_idle();
+        }
+    } install_stop;
     struct UpdateStop
     {
         ~UpdateStop()
@@ -501,10 +584,18 @@ int main()
     steam_config.cache_paths = {std::string(kWingsDir) + "/steam_reviews.v1"};
     orbit::SteamReviewService steam_reviews(orbit::popularity_hub(), doc_fetcher, steam_config);
     orbit::set_steam_reviews(&steam_reviews);
+    // Links that failed for the player on this console (B-20): Best skips them, the card says why.
+    orbit::LinkFlags link_flags;
+    link_flags.load(link_flags_paths());
+    if (link_flags.expire(static_cast<std::int64_t>(time(nullptr))) > 0)
+        link_flags.save(link_flags_paths());
+    orbit::set_link_flags(&link_flags, link_flags_paths());
     {
         orbit::WingsLocalPrefs local;
         orbit::load_local_prefs(wings_prefs_paths(), &local);
         orbit::wings_update().set_enabled(local.update_check);
+        orbit::download_reconnect().set_enabled(local.auto_reconnect);
+        orbit::pkg_installs().set_keep_files(local.keep_pkg_files);
         popularity.apply(local.popularity_enabled, local.popularity_url);
         orbit::editorial_hub().apply_prefs(local.notes_enabled, local.carousel_enabled);
     }

@@ -15,6 +15,7 @@
 #include "orbit/art.hpp"
 #include "orbit/carousel.hpp"
 #include "orbit/catalogue_view.hpp"
+#include "orbit/torbox_status.hpp"
 #include "orbit/cover_art.hpp"
 #include "orbit/destination_browser.hpp"
 #include "orbit/download_all.hpp"
@@ -32,6 +33,7 @@
 #include "orbit/popularity.hpp"
 #include "orbit/theme.hpp"
 #include "orbit/ui.hpp"
+#include "orbit/update_screen.hpp"
 #include "ui/components/keyboard.hpp"
 #include "ui/feedback.hpp"
 #include "ui/glyphs.hpp"
@@ -46,6 +48,8 @@
 
 namespace orbit
 {
+
+struct UpdateView; // update_screen.hpp
 
 using hui::Action;
 using hui::Direction;
@@ -130,6 +134,9 @@ struct Context
     // Ends the title cleanly (the console build: the system is asked to close it). Empty
     // where Wings cannot close itself (preview, tests).
     std::function<void()> close_app;
+    // Settings > Wings > Wings update: fills the view and returns true while a newer Wings is known (the App
+    // sets it from the update logic). Empty or false: the row says "Up to date".
+    std::function<bool(UpdateView &)> wings_update_view;
 };
 
 // The top-level tabs, left to right.
@@ -152,6 +159,7 @@ struct Intent
         none,
         top_bar,  // the focus left the screen upward
         show_tab, // tab: one of tab::
+        open_update, // Settings > Wings update: the App opens its full-screen update page
     } kind = Kind::none;
     int tab = 0;
     std::string toast; // a short confirmation the app shows
@@ -279,6 +287,11 @@ class ListScreen : public Screen
     int index() const
     {
         return index_;
+    }
+    // Previews: put the focus on a row.
+    void set_index(int index)
+    {
+        index_ = index;
     }
     // The accent of the focused row's section (theme::Accent; -1 none). Tests.
     int focus_accent() const
@@ -518,6 +531,8 @@ class StoreScreen final : public Screen
         parts_confirm,   // "Download 22 parts from VikingFile?"
         parts_service,   // which debrid service takes all the parts
         more_menu,       // the game page header's three-dots menu
+        bad_reason,      // "Mark as bad": why
+        torbox_preparing, // TorBox still preparing after 10 minutes: Try again / Open TorBox / OK
     };
     enum class Panel : std::uint8_t
     {
@@ -575,6 +590,15 @@ class StoreScreen final : public Screen
     void update_flow(Feedback &feedback, Intent &intent);
     void activate_row(Feedback &feedback);
     void activate_mirror(int mirror, Feedback &feedback);
+    // B-20: the card menu's last item, "Mark as bad" or "Clear bad mark".
+    // That item chosen: clears the card's flag, or asks why it is bad.
+    void choose_flag_item(int mirror, Feedback &feedback);
+    // B-19: TorBox is still preparing the file on its server.
+    void retry_torbox();
+    void open_torbox_notice();
+    void open_torbox_site();
+    // Flags (reason none: clears) every link of the card, saves, ranks the page again.
+    void mark_mirror(int mirror, int reason);
     void activate_ref(const LinkRef &ref, Feedback &feedback);
     void start_single(const std::string &service);
     void start_batch(const std::string &service);
@@ -674,6 +698,14 @@ class StoreScreen final : public Screen
     LinkRef pending_ref_;     // the link a confirmation or choice is about
     PackageLink pending_link_;
     int parts_mirror_ = -1;   // the multipart card whose menu is open
+    int card_mirror_ = -1;    // the card of bad_reason
+    // B-19: while TorBox prepares a file, the link is asked again every 30 s for up to 10 minutes.
+    TorboxPrepareWait torbox_wait_;
+    TorboxPrepareWait::Tick torbox_tick_;
+    double torbox_clock_ = 0.0;
+    LinkRef torbox_ref_;
+    std::string torbox_service_;
+    std::string single_service_; // the service of the last single start
     PartsPlan parts_plan_;
     std::string selection_id_;
     std::string selection_service_;
@@ -1287,6 +1319,8 @@ class SettingsScreen final : public ListScreen
         capabilities,
         folder,
         connections,
+        auto_reconnect,
+        keep_pkg_files,
         real_debrid,
         torbox,
         group,
@@ -1314,6 +1348,8 @@ class SettingsScreen final : public ListScreen
         hero_source,
         notes,
         carousel,
+        bad_links,       // B-20: the bad-link flags of this console
+        clear_bad_links, // B-20: forget them all (asks first)
     };
     enum class Pending : std::uint8_t
     {
@@ -1324,6 +1360,7 @@ class SettingsScreen final : public ListScreen
         notice,
         pegasus_download,
         pegasus_send,
+        clear_bad_links,
     };
     enum class ListFor : std::uint8_t
     {
@@ -1335,8 +1372,11 @@ class SettingsScreen final : public ListScreen
         region,
         format,
         providers,
-        wings_update,
+        bad_links,
     };
+    // B-20: the flag ids the bad_links list shows, in its order.
+    std::vector<std::string> bad_link_ids_;
+    void open_bad_links();
     enum class Typing : std::uint8_t
     {
         none,
@@ -1506,6 +1546,9 @@ class App
     {
         return after_install_;
     }
+    // The preview scenes open the update dialog (true) or page (false) at once; false while nothing newer
+    // is known. (On the console the dialog comes from the startup prompt, the page from Settings.)
+    bool show_update(bool dialog);
 
   private:
     enum class Area : std::uint8_t
@@ -1544,9 +1587,19 @@ class App
     int capture_button_ = 0;     // 0 hide / close, 1 cancel the capture
     ui::Ease capture_in_;
     std::uint64_t capture_toasted_ = 0; // capture_serial whose completion was announced
-    // A newer Wings (wings_update.hpp): looked for when the network is ready, announced once per start.
+    // A newer Wings (wings_update.hpp, wings_install.hpp): looked for when the network is ready, offered in a
+    // dialog once per start (unless snoozed), followed on the full-screen update page.
     float update_poll_ = 0.0f;
-    bool update_announced_ = false;
+    UpdateDialog update_dialog_;
+    UpdatePage update_page_;
+    ConfirmDialog install_confirm_;  // "Install Wings X?" before the page's Install acts
+    bool install_replace_ = false;   // the confirm named the player's own copy (needs_replace_confirm)
+    bool update_modal() const
+    {
+        return update_dialog_.is_open() || update_page_.is_open() || install_confirm_.is_open();
+    }
+    void update_flow(const InputFrame &input, float dt, Feedback &feedback);
+    void start_update_download();
 };
 
 } // namespace orbit
